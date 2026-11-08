@@ -1,4 +1,4 @@
-# API status
+# Midnight UI API status
 
 ## Current release
 

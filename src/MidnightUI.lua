@@ -5020,8 +5020,8 @@ local function positionFeatureTooltip()
 		x = math.max(8, point.X - panelSize.X - TOOLTIP_GAP)
 	end
 	local y = point.Y + TOOLTIP_GAP
-	local maxY = math.max(8, screenSize.Y - panelSize.Y - 8)
-	y = math.min(y, maxY)
+	-- Keep the tooltip below the cursor even at the bottom screen edge.
+	-- The viewport may clip the overflow rather than moving it above the cursor.
 	tooltipPanel.Position = UDim2.fromOffset(x, y)
 end
 

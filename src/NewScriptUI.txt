@@ -699,6 +699,24 @@ local function setToggleSettingsOpen(open, config)
     end
 end
 
+window:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+    if activeToggleSettings and toggleSettingsPopup.Visible then
+        positionSettingsPopup(activeToggleSettings.button)
+        if typeOptionsPopup.Visible then
+            positionTypeOptions()
+        end
+    end
+end)
+
+window:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    if activeToggleSettings and toggleSettingsPopup.Visible then
+        positionSettingsPopup(activeToggleSettings.button)
+        if typeOptionsPopup.Visible then
+            positionTypeOptions()
+        end
+    end
+end)
+
 local function keyNameFromCode(keyCode)
     local name = keyCode.Name
     local numpadNames = {
@@ -3510,6 +3528,7 @@ local function minimizeWindow()
 	endDrag()
 	setDropdownOpen(false)
 	closeColorPicker()
+	setToggleSettingsOpen(false)
 
 	state.fullPos = getOffsetPosition(window)
 	state.fullSize = Vector2.new(window.Size.X.Offset, window.Size.Y.Offset)

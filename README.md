@@ -1,6 +1,6 @@
 <div align="center">
 
-# NewScriptUI
+# Midnight UI
 
 ### A compact, dark Roblox UI project built with Luau.
 
@@ -21,7 +21,7 @@ A minimal dark interface with animated controls, draggable and resizable windows
 
 ## About
 
-**NewScriptUI** is an experimental Roblox UI project focused on a clean dark appearance, compact spacing, and polished interactions.
+**Midnight UI** is an experimental Roblox UI project focused on a clean dark appearance, compact spacing, and polished interactions.
 
 The current release is a **single-file UI prototype**. It creates one configured demo interface when run. The project is being developed toward a reusable UI library, but the public `CreateWindow` / `AddToggle` style API is not implemented yet.
 
@@ -46,12 +46,19 @@ The current release is a **single-file UI prototype**. It creates one configured
 | Slider | Draggable 0–100 slider with numeric text input |
 | Color picker | HSV saturation/value square, hue bar, opacity bar, HEX/RGB input |
 | Profile | Player avatar and username in the footer and compact bar |
+| Tooltips | Bottom-right hover tooltip with configurable per-toggle delay |
 
 ### Toggle settings
 
 The two primary demo toggles have a gear button on the right side. Hovering the gear highlights it; clicking opens a small overlay with a **Key** field and a **Type** dropdown. The key field starts unassigned and shows `Press a key`. It accepts available keyboard `Enum.KeyCode` values (including function keys, `Insert`, and numpad keys) plus mouse buttons displayed as `Mouse 1`, `Mouse 2`, and `Mouse 3`. The activation choices are `Always on`, `Hold on`, and `Toggle`.
 
-The option is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/NewScriptUI.txt`; set it to `false` to hide the settings buttons. The icon uses asset `111506353970498`. See [Toggle settings](docs/TOGGLE_SETTINGS.md) for details.
+The option is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/Midnight UI.txt`; set it to `false` to hide the settings buttons. The icon uses asset `111506353970498`. See [Toggle settings](docs/TOGGLE_SETTINGS.md) for details.
+
+### Hover tooltips and hit testing
+
+The demo tooltip opens at the bottom-right of the hovered toggle. Its delay is soft-coded in `CONFIG.TOOLTIP_SETTINGS`: `DEFAULT_DELAY = 1` sets the one-second fallback, while `DELAY_BY_TOGGLE` lets each tooltip-enabled toggle override its own delay by instance name (the current example uses `TooltipToggle = 1`). Change that value to tune only that toggle, or add another toggle name when adding another tooltip.
+
+Mouse and touch positions now pass through one shared ScreenGui-coordinate helper before hit tests and slider/color-picker drags, keeping the pointer and GUI bounds in the same coordinate space.
 
 ### Default demo values
 
@@ -69,7 +76,7 @@ The option is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/NewSc
 
 1. Open your Roblox Studio experience.
 2. In Explorer, add a **LocalScript** under `StarterPlayer > StarterPlayerScripts`.
-3. Open [`src/NewScriptUI.txt`](src/NewScriptUI.txt), copy its contents, and paste them into the LocalScript.
+3. Open [`src/Midnight UI.txt`](src/Midnight UI.txt), copy its contents, and paste them into the LocalScript.
 4. Start a client play test and try the UI. Press `RightShift` to hide or show it.
 5. Click a gear beside one of the two primary demo toggles to configure its key and activation type.
 
@@ -80,7 +87,7 @@ See [examples/StudioSetup.md](examples/StudioSetup.md) for more detail, [docs/AP
 ## Project structure
 
 ```text
-NewScriptUI/
+MidnightUI/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/
 │   │   ├── bug_report.md
@@ -95,7 +102,7 @@ NewScriptUI/
 │   ├── README.md
 │   └── StudioSetup.md
 ├── src/
-│   └── NewScriptUI.txt
+│   └── Midnight UI.txt
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── README.md
@@ -128,7 +135,7 @@ Bug reports and focused suggestions are welcome. Please read [CONTRIBUTING.md](C
 - Review the source before using it in an experience.
 - Never commit passwords, cookies, session tokens, API keys, or other private information.
 - Do not use the project to interfere with other players, bypass experience rules, or disrupt Roblox experiences.
-- NewScriptUI is an independent community project and is not affiliated with, sponsored by, or endorsed by Roblox Corporation.
+- Midnight UI is an independent community project and is not affiliated with, sponsored by, or endorsed by Roblox Corporation.
 
 ## License
 
@@ -138,6 +145,6 @@ No license has been selected yet. Until a license is added, the code is publicly
 
 <div align="center">
 
-**NewScriptUI** · Luau · Early prototype
+**Midnight UI** · Luau · Early prototype
 
 </div>

@@ -1,4 +1,4 @@
-# Midnight UI roadmap
+# Midnight-UI roadmap
 
 This roadmap separates the current working prototype from planned library features. An unchecked item is not available in the current source.
 

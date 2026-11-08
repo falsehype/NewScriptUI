@@ -1,4 +1,4 @@
-# NewScriptUI roadmap
+# Midnight UI roadmap
 
 This roadmap separates the current working prototype from planned library features. An unchecked item is not available in the current source.
 
@@ -13,6 +13,8 @@ This roadmap separates the current working prototype from planned library featur
 - [x] Optional settings gear beside the two primary demo toggles
 - [x] Floating key settings panel with keyboard/mouse capture
 - [x] `Always on`, `Hold on`, and `Toggle` activation modes
+- [x] Bottom-right hover tooltip placement with configurable per-toggle delay
+- [x] Shared mouse/touch coordinate conversion for hit testing and drag interactions
 
 ## Phase 2 — Reusable API
 

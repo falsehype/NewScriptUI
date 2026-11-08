@@ -52,7 +52,7 @@ The current release is a **single-file UI prototype**. It creates one configured
 
 The two primary demo toggles have a gear button on the right side. Hovering the gear highlights it; clicking opens a small overlay with a **Key** field and a **Type** dropdown. The key field starts unassigned and shows `Press a key`. It accepts available keyboard `Enum.KeyCode` values (including function keys, `Insert`, and numpad keys) plus mouse buttons displayed as `Mouse 1`, `Mouse 2`, and `Mouse 3`. The activation choices are `Always on`, `Hold on`, and `Toggle`.
 
-The option is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/Midnight UI.txt`; set it to `false` to hide the settings buttons. The icon uses asset `111506353970498`. See [Toggle settings](docs/TOGGLE_SETTINGS.md) for details.
+The option is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/MidnightUI.lua`; set it to `false` to hide the settings buttons. The icon uses asset `111506353970498`. See [Toggle settings](docs/TOGGLE_SETTINGS.md) for details.
 
 ### Hover tooltips and hit testing
 
@@ -76,7 +76,7 @@ Mouse and touch positions now pass through one shared ScreenGui-coordinate helpe
 
 1. Open your Roblox Studio experience.
 2. In Explorer, add a **LocalScript** under `StarterPlayer > StarterPlayerScripts`.
-3. Open [`src/Midnight UI.txt`](src/Midnight UI.txt), copy its contents, and paste them into the LocalScript.
+3. Open [`src/MidnightUI.lua`](src/MidnightUI.lua), copy its contents, and paste them into the LocalScript.
 4. Start a client play test and try the UI. Press `RightShift` to hide or show it.
 5. Click a gear beside one of the two primary demo toggles to configure its key and activation type.
 
@@ -102,7 +102,7 @@ MidnightUI/
 │   ├── README.md
 │   └── StudioSetup.md
 ├── src/
-│   └── Midnight UI.txt
+│   └── MidnightUI.lua
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 ├── README.md

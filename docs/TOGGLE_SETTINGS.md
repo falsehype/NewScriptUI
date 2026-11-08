@@ -1,6 +1,6 @@
-# Midnight UI toggle settings menu
+# Midnight-UI toggle settings menu
 
-The current prototype adds a settings gear to the two main demo toggle rows. The source setting is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/MidnightUI.lua`.
+The current prototype adds a settings gear to the two main demo toggle rows. The source setting is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/Midnight-UI.txt`.
 
 ```lua
 local TOGGLE_SETTINGS_ENABLED = true
@@ -38,7 +38,7 @@ This feature is implemented in the current single-file demo for its two primary 
 
 ## Tooltip hover delay
 
-Tooltip timing is configured in `CONFIG.TOOLTIP_SETTINGS` in `src/MidnightUI.lua`:
+Tooltip timing is configured in `CONFIG.TOOLTIP_SETTINGS` in `src/Midnight-UI.txt`:
 
 ```lua
 TOOLTIP_SETTINGS = {

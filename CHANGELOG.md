@@ -1,8 +1,13 @@
 # Changelog
 
-Notable project changes are recorded here. No stable library release has shipped yet.
+Notable Midnight UI project changes are recorded here. No stable library release has shipped yet.
 
 ## Unreleased
+
+- Rebranded the source and repository documentation as **Midnight UI**.
+- Anchored hover tooltips at the bottom-right of the cursor without intentionally flipping them above it.
+- Added soft-coded per-toggle tooltip delays, with a 1-second default and per-toggle overrides.
+- Unified mouse/touch pointer coordinates for settings popups, sliders, color-picker hit areas, and related hit tests.
 
 - Added optional settings gear buttons to the two primary demo toggles.
 - Added a floating per-toggle settings menu with an initially unassigned keybind field.

@@ -9,7 +9,7 @@
 ## Example
 
 <p align="center">
-  <img src="assets/midnight-ui-example.jpg" alt="Midnight-UI running in Roblox" width="800">
+  <img src="assets/midnight-ui-example.webp" alt="Midnight-UI running in Roblox" width="800">
 </p>
 
 - Extensive Documentation

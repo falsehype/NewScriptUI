@@ -231,7 +231,7 @@ local dragRegion = F.create("TextButton", titleBar, {
 
 local titleLabel = F.makeText(
 	titleBar,
-	"Midnight UI",
+	"Midnight-UI",
 	UDim2.fromScale(1, 1),
 	UDim2.fromOffset(0, 0),
 	15,
@@ -5114,4 +5114,4 @@ Root:GetPropertyChangedSignal("Visible"):Connect(function()
 	end
 end)
 
-print(string.format("Midnight UI | %.2fs", os.clock() - scriptLoadStartTime))
+print(string.format("Midnight-UI | %.2fs", os.clock() - scriptLoadStartTime))

@@ -13,7 +13,7 @@ A minimal dark interface with animated controls, draggable and resizable windows
   <img alt="License not selected" src="https://img.shields.io/badge/license-not%20selected-lightgrey?style=for-the-badge">
 </p>
 
-[Features](#features) · [Quick start](#quick-start) · [Project structure](#project-structure) · [Roadmap](#roadmap)
+[Features](#features) · [Quick start](#quick-start) · [Toggle settings](docs/TOGGLE_SETTINGS.md) · [Project structure](#project-structure) · [Roadmap](#roadmap)
 
 </div>
 

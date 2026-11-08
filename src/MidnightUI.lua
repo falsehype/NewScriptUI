@@ -15,9 +15,12 @@ local PLAYER = {
 }
 PLAYER.PlayerGui = PLAYER.LocalPlayer:WaitForChild("PlayerGui")
 
-local Existing = PLAYER.PlayerGui:FindFirstChild("MidnightUI")
-if Existing then
-	Existing:Destroy()
+-- Remove either name so upgrading from the old UI does not leave a duplicate.
+for _, guiName in ipairs({"MidnightUI", "NewScriptGui"}) do
+	local existing = PLAYER.PlayerGui:FindFirstChild(guiName)
+	if existing then
+		existing:Destroy()
+	end
 end
 
 local COLORS = {

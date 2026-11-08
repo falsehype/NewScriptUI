@@ -1,6 +1,6 @@
 # Toggle settings menu
 
-The current prototype adds a settings gear to the two main demo toggle rows. The source setting is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/Midnight UI.txt`.
+The current prototype adds a settings gear to the two main demo toggle rows. The source setting is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/MidnightUI.lua`.
 
 ```lua
 local TOGGLE_SETTINGS_ENABLED = true

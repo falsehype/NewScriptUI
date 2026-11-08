@@ -998,6 +998,7 @@ local sliderKnob = create("Frame", sliderTrack, {
 	ZIndex = 8,
 })
 addCorner(sliderKnob, 6)
+
 local sliderInput = create("TextBox", rightGroupBox, {
 	Name = "SliderInput",
 	Position = UDim2.new(1, -(spacing + 46), 0, sliderControlsY),
@@ -1996,7 +1997,8 @@ local transparencyTrack = create("Frame", colorPopup, {
 	BackgroundColor3 = Color3.fromRGB(39, 39, 45),
 	BackgroundTransparency = 0,
 	BorderSizePixel = 0,
-	ClipsDescendants = false,	ZIndex = 81,
+	ClipsDescendants = false,
+	ZIndex = 81,
 })
 addCorner(transparencyTrack, 4)
 
@@ -2995,6 +2997,7 @@ local miniBar = create("CanvasGroup", Root, {
 })
 addCorner(miniBar, 6)
 addStroke(miniBar)
+
 local miniAvatar = create("ImageLabel", miniBar, {
 	Name = "MiniAvatar",
 	BackgroundColor3 = COLORS.SelectBg,

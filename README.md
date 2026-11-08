@@ -13,7 +13,7 @@ A minimal dark interface with animated controls, draggable and resizable windows
   <img alt="License not selected" src="https://img.shields.io/badge/license-not%20selected-lightgrey?style=for-the-badge">
 </p>
 
-[Features](#features) · [Preview](#preview) · [Quick start](#quick-start) · [Project structure](#project-structure) · [Roadmap](#roadmap)
+[Features](#features) · [Quick start](#quick-start) · [Project structure](#project-structure) · [Roadmap](#roadmap)
 
 </div>
 
@@ -23,7 +23,7 @@ A minimal dark interface with animated controls, draggable and resizable windows
 
 **NewScriptUI** is an experimental Roblox UI project focused on a clean dark appearance, compact spacing, and polished interactions.
 
-The current release is a **single-file UI prototype**. It creates one configured demo interface when executed. The project is being developed toward a reusable UI library, but the public `CreateWindow` / `AddToggle` style API is not implemented yet.
+The current release is a **single-file UI prototype**. It creates one configured demo interface when run. The project is being developed toward a reusable UI library, but the public `CreateWindow` / `AddToggle` style API is not implemented yet.
 
 > [!NOTE]
 > This repository is in an early prototype stage. Features listed below describe the current demo, not a stable, versioned library API.
@@ -52,33 +52,18 @@ The current release is a **single-file UI prototype**. It creates one configured
 - Initial picker color: `#FF2828`
 - Visibility key: `RightShift`
 
-## Preview
-
-<div align="center">
-  <img src="assets/dropdown-preview.png" alt="NewScriptUI dropdown preview" width="620">
-  <br>
-  <sub>Dropdown preview from the current prototype.</sub>
-</div>
-
 ## Quick start
 
-### Executor-style loader
+### Test in Roblox Studio
 
-The current source is a standalone script rather than a returned ModuleScript. In an environment that supports the nonstandard functions `game:HttpGet` and `loadstring`, the example loader is:
+1. Open your Roblox Studio experience.
+2. In Explorer, add a **LocalScript** under `StarterPlayer > StarterPlayerScripts`.
+3. Open [`src/NewScriptUI.txt`](src/NewScriptUI.txt), copy its contents, and paste them into the LocalScript.
+4. Start a client play test and try the UI. Press `RightShift` to hide or show it.
 
-```lua
-loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/falsehype/NewScriptUI/main/src/NewScriptUI.txt"
-))()
-```
+The current source is a standalone preset script. It does not yet return a reusable ModuleScript table or expose configurable methods such as `CreateWindow()` and `AddToggle()`.
 
-You can also open [the source file](src/NewScriptUI.txt) and use its **Raw** URL.
-
-Third-party execution environments are not part of Roblox Studio. Their behavior and compatibility are outside this project's control. Only run code you have inspected and trust. This project does not distribute an executor.
-
-### Roblox Studio
-
-For standard Roblox Studio development, copy the source into a `LocalScript` under an appropriate client location such as `StarterPlayerScripts` and test it in Studio. The current source is not yet packaged as a reusable `ModuleScript` library.
+See [examples/StudioSetup.md](examples/StudioSetup.md) for more detail and [docs/API_STATUS.md](docs/API_STATUS.md) for the current API status.
 
 ## Project structure
 
@@ -90,14 +75,12 @@ NewScriptUI/
 │   │   ├── feature_request.md
 │   │   └── question.md
 │   └── PULL_REQUEST_TEMPLATE.md
-├── assets/
-│   └── dropdown-preview.png
 ├── docs/
 │   ├── API_STATUS.md
 │   └── ROADMAP.md
 ├── examples/
-│   ├── Load.txt
-│   └── README.md
+│   ├── README.md
+│   └── StudioSetup.md
 ├── src/
 │   └── NewScriptUI.txt
 ├── CHANGELOG.md
@@ -128,8 +111,7 @@ Bug reports and focused suggestions are welcome. Please read [CONTRIBUTING.md](C
 
 ## Safety and trust
 
-- Review the source before executing it.
-- A raw GitHub URL changes when its file is updated. Pin a commit or release tag when you need a fixed version.
+- Review the source before using it in an experience.
 - Never commit passwords, cookies, session tokens, API keys, or other private information.
 - Do not use the project to interfere with other players, bypass experience rules, or disrupt Roblox experiences.
 - NewScriptUI is an independent community project and is not affiliated with, sponsored by, or endorsed by Roblox Corporation.

@@ -1,6 +1,6 @@
 # Toggle settings menu
 
-The current prototype adds a settings gear to the two main demo toggle rows. The source setting is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/NewScriptUI.txt`.
+The current prototype adds a settings gear to the two main demo toggle rows. The source setting is controlled by `TOGGLE_SETTINGS_ENABLED` near the top of `src/Midnight UI.txt`.
 
 ```lua
 local TOGGLE_SETTINGS_ENABLED = true
@@ -35,3 +35,18 @@ A key is not assigned by default. Until one is selected, the activation mode doe
 ## Scope and status
 
 This feature is implemented in the current single-file demo for its two primary toggle rows. It is not yet exposed through a reusable `Groupbox:AddToggle()` API because the general library API has not been implemented. The current setup is intended for ordinary Roblox Studio LocalScript testing in an experience you control.
+
+## Tooltip hover delay
+
+Tooltip timing is configured in `CONFIG.TOOLTIP_SETTINGS` in `src/MidnightUI.lua`:
+
+```lua
+TOOLTIP_SETTINGS = {
+    DEFAULT_DELAY = 1,
+    DELAY_BY_TOGGLE = {
+        TooltipToggle = 1,
+    },
+}
+```
+
+Values are seconds. `DEFAULT_DELAY` is the fallback for tooltip-enabled toggles; add or change a toggle's instance name in `DELAY_BY_TOGGLE` to customize that toggle independently.

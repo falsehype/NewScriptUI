@@ -9,14 +9,14 @@ This roadmap separates the current working prototype from planned library featur
 - [x] Resizing, minimizing, and restoring
 - [x] `RightShift` visibility toggle
 - [x] Demo groupboxes and animated controls
-- [x] HSV color picker with hue, opacity, and HEX/RGB entry
+- [x] HSV color picker with hue, opacity, and HEX/RGB entry\n- [x] Optional settings gear beside the two primary demo toggles\n- [x] Floating key settings panel with keyboard/mouse capture\n- [x] `Always on`, `Hold on`, and `Toggle` activation modes
 
 ## Phase 2 — Reusable API
 
 - [ ] Refactor the startup script into a ModuleScript library entry point
 - [ ] Add `Library:CreateWindow(config)`
 - [ ] Add dynamic tab and groupbox creation
-- [ ] Add control constructors for toggles, dropdowns, sliders, and color pickers
+- [ ] Add control constructors for toggles, dropdowns, sliders, and color pickers\n- [ ] Expose toggle settings as an option in a future `AddToggle()` configuration
 - [ ] Return component objects with `GetValue()`, `SetValue()`, and `OnChanged()`
 - [ ] Validate user configuration and provide readable errors
 
@@ -27,7 +27,7 @@ This roadmap separates the current working prototype from planned library featur
 - [ ] Add a cleanup registry for connections, tweens, and temporary instances
 - [ ] Ensure popups render above groupboxes and do not start window dragging
 - [ ] Test popup placement near every screen edge
-- [ ] Test mouse and touch behavior
+- [ ] Test keyboard, numpad, function-key, mouse, and touch behavior in Studio
 - [ ] Add `Window:Destroy()` and component cleanup
 
 ## Phase 4 — Documentation and releases

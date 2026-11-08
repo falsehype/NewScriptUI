@@ -51,6 +51,9 @@ local SLIDER_SETTINGS = {
 	default = 50,
 }
 local DROPDOWN_OPTIONS = {"alfa", "delta", "foxtrot", "november", "bravo", "charlie"}
+local TOGGLE_SETTINGS_ENABLED = true
+local TOGGLE_SETTINGS_ICON = "rbxassetid://111506353970498"
+local TOGGLE_SETTINGS_TYPES = {"Always on", "Hold on", "Toggle"}
 
 local function create(className, parent, properties)
 	local object = Instance.new(className)
@@ -324,6 +327,7 @@ local headerDivider = create("Frame", helloGroupBox, {
 })
 
 local toggleEnabled = false
+local helloSettingsMode = "Toggle"
 
 local toggleRowY = spacing + 18 + spacing + 1 + spacing
 
@@ -401,7 +405,43 @@ local toggleKnob = create("Frame", toggleTrack, {
 })
 addCorner(toggleKnob, 7)
 
+local settingsButton
+if TOGGLE_SETTINGS_ENABLED then
+    toggleLabel.Size = UDim2.new(1, -96, 1, 0)
+    toggleTrack.Position = UDim2.new(1, -(36 + spacing + 22 + spacing), 0.5, -10)
+    settingsButton = create("ImageButton", toggleRow, {
+        Name = "SettingsButton",
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -5, 0.5, 0),
+        Size = UDim2.fromOffset(20, 20),
+        BackgroundColor3 = COLORS.SelectBg,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Image = TOGGLE_SETTINGS_ICON,
+        ImageColor3 = COLORS.Icon,
+        ImageTransparency = 0,
+        AutoButtonColor = false,
+        ZIndex = 8,
+    })
+    addCorner(settingsButton, 4)
+    settingsButton.MouseEnter:Connect(function()
+        tween("toggle_settings_hover_" .. toggleRow.Name, settingsButton, 0.13, {
+            BackgroundTransparency = 0.25,
+            ImageColor3 = COLORS.IconHover,
+        })
+    end)
+    settingsButton.MouseLeave:Connect(function()
+        tween("toggle_settings_hover_" .. toggleRow.Name, settingsButton, 0.13, {
+            BackgroundTransparency = 1,
+            ImageColor3 = COLORS.Icon,
+        })
+    end)
+end
+
 local function setHelloToggle(enabled)
+	if helloSettingsMode == "Always on" then
+		enabled = true
+	end
 	toggleEnabled = enabled
 
 	tween(
@@ -440,7 +480,16 @@ toggleRow.MouseLeave:Connect(function()
 	setToggleHover(false, toggleRow, toggleLabel)
 end)
 
-toggleRow.Activated:Connect(function()
+toggleRow.Activated:Connect(function(input)
+	if settingsButton and input and input.Position then
+		local pointer = Vector2.new(input.Position.X, input.Position.Y)
+		local buttonPosition = settingsButton.AbsolutePosition
+		local buttonSize = settingsButton.AbsoluteSize
+		if pointer.X >= buttonPosition.X and pointer.X <= buttonPosition.X + buttonSize.X
+			and pointer.Y >= buttonPosition.Y and pointer.Y <= buttonPosition.Y + buttonSize.Y then
+			return
+		end
+	end
 	setHelloToggle(not toggleEnabled)
 end)
 
@@ -454,10 +503,11 @@ local rightToggleRow = rightGroupBox:WaitForChild("ToggleRow")
 local rightToggleTrack = rightToggleRow:WaitForChild("ToggleTrack")
 local rightToggleKnob = rightToggleTrack:WaitForChild("ToggleKnob")
 local rightToggleEnabled = false
+local rightSettingsMode = "Toggle"
 
 local rightToggleLabel = rightToggleRow:WaitForChild("ToggleLabel")
 rightToggleLabel.Position = UDim2.fromOffset(0, 0)
-rightToggleLabel.Size = UDim2.new(1, -66, 1, 0)
+rightToggleLabel.Size = UDim2.new(1, TOGGLE_SETTINGS_ENABLED and -96 or -66, 1, 0)
 
 rightToggleRow.MouseEnter:Connect(function()
 	setToggleHover(true, rightToggleRow, rightToggleLabel)
@@ -467,17 +517,398 @@ rightToggleRow.MouseLeave:Connect(function()
 	setToggleHover(false, rightToggleRow, rightToggleLabel)
 end)
 
-rightToggleRow.Activated:Connect(function()
-	rightToggleEnabled = not rightToggleEnabled
+local function setRightToggle(enabled)
+    if rightSettingsMode == "Always on" then
+        enabled = true
+    end
+    rightToggleEnabled = enabled
+    tween("right_toggle_track", rightToggleTrack, 0.18, {
+        BackgroundColor3 = rightToggleEnabled and COLORS.Accent or Color3.fromRGB(57, 57, 64),
+    })
+    tween("right_toggle_knob", rightToggleKnob, 0.18, {
+        Position = rightToggleEnabled and UDim2.new(1, -17, 0, 3) or UDim2.fromOffset(3, 3),
+        BackgroundColor3 = rightToggleEnabled and Color3.fromRGB(245, 249, 255) or Color3.fromRGB(190, 190, 198),
+    })
+end
 
-	tween("right_toggle_track", rightToggleTrack, 0.18, {
-		BackgroundColor3 = rightToggleEnabled and COLORS.Accent or Color3.fromRGB(57, 57, 64),
-	})
+local rightSettingsButton = TOGGLE_SETTINGS_ENABLED and rightToggleRow:FindFirstChild("SettingsButton") or nil
+if rightSettingsButton then
+    rightSettingsButton.Name = "RightToggleSettingsButton"
+    rightSettingsButton.MouseEnter:Connect(function()
+        tween("toggle_settings_hover_" .. rightToggleRow.Name, rightSettingsButton, 0.13, {
+            BackgroundTransparency = 0.25,
+            ImageColor3 = COLORS.IconHover,
+        })
+    end)
+    rightSettingsButton.MouseLeave:Connect(function()
+        tween("toggle_settings_hover_" .. rightToggleRow.Name, rightSettingsButton, 0.13, {
+            BackgroundTransparency = 1,
+            ImageColor3 = COLORS.Icon,
+        })
+    end)
+end
 
-	tween("right_toggle_knob", rightToggleKnob, 0.18, {
-		Position = rightToggleEnabled and UDim2.new(1, -17, 0, 3) or UDim2.fromOffset(3, 3),
-		BackgroundColor3 = rightToggleEnabled and Color3.fromRGB(245, 249, 255) or Color3.fromRGB(190, 190, 198),
-	})
+rightToggleRow.Activated:Connect(function(input)
+    if rightSettingsButton and input and input.Position then
+        local pointer = Vector2.new(input.Position.X, input.Position.Y)
+        local buttonPosition = rightSettingsButton.AbsolutePosition
+        local buttonSize = rightSettingsButton.AbsoluteSize
+        if pointer.X >= buttonPosition.X and pointer.X <= buttonPosition.X + buttonSize.X
+            and pointer.Y >= buttonPosition.Y and pointer.Y <= buttonPosition.Y + buttonSize.Y then
+            return
+        end
+    end
+    setRightToggle(not rightToggleEnabled)
+end)
+
+local toggleSettingsPopup = create("Frame", ScreenGui, {
+    Name = "ToggleSettingsPopup",
+    Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(224, 86),
+    BackgroundColor3 = Color3.fromRGB(21, 21, 25),
+    BackgroundTransparency = 0,
+    BorderSizePixel = 0,
+    Visible = false,
+    ClipsDescendants = false,
+    ZIndex = 6000,
+})
+addCorner(toggleSettingsPopup, 6)
+addStroke(toggleSettingsPopup)
+
+local keyTitle = makeText(toggleSettingsPopup, "Key", UDim2.fromOffset(44, 26), UDim2.fromOffset(10, 8), 12, COLORS.TabIdle, Enum.Font.GothamMedium)
+keyTitle.ZIndex = 6002
+
+local keybindBox = create("TextBox", toggleSettingsPopup, {
+    Name = "KeybindBox",
+    Position = UDim2.fromOffset(58, 8),
+    Size = UDim2.fromOffset(156, 26),
+    BackgroundColor3 = Color3.fromRGB(39, 39, 45),
+    BorderSizePixel = 0,
+    Text = "",
+    PlaceholderText = "Press a key",
+    PlaceholderColor3 = COLORS.Muted,
+    TextColor3 = COLORS.Title,
+    TextSize = 11,
+    Font = Enum.Font.GothamMedium,
+    ClearTextOnFocus = false,
+    TextEditable = true,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex = 6002,
+})
+addCorner(keybindBox, 4)
+addStroke(keybindBox)
+
+local typeTitle = makeText(toggleSettingsPopup, "Type", UDim2.fromOffset(44, 26), UDim2.fromOffset(10, 44), 12, COLORS.TabIdle, Enum.Font.GothamMedium)
+typeTitle.ZIndex = 6002
+
+local typeButton = create("TextButton", toggleSettingsPopup, {
+    Name = "TypeDropdownButton",
+    Position = UDim2.fromOffset(58, 44),
+    Size = UDim2.fromOffset(156, 26),
+    BackgroundColor3 = Color3.fromRGB(39, 39, 45),
+    BorderSizePixel = 0,
+    Text = "",
+    AutoButtonColor = false,
+    ZIndex = 6002,
+})
+addCorner(typeButton, 4)
+addStroke(typeButton)
+
+local typeButtonText = makeText(typeButton, "Toggle", UDim2.new(1, -25, 1, 0), UDim2.fromOffset(8, 0), 11, COLORS.TabIdle, Enum.Font.GothamMedium)
+typeButtonText.ZIndex = 6003
+local typeChevron = makeText(typeButton, "⌄", UDim2.fromOffset(16, 26), UDim2.new(1, -21, 0, 0), 14, COLORS.Icon, Enum.Font.GothamMedium)
+typeChevron.TextXAlignment = Enum.TextXAlignment.Center
+typeChevron.ZIndex = 6003
+
+local typeOptionsPopup = create("Frame", ScreenGui, {
+    Name = "ToggleTypeOptions",
+    Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(156, 80),
+    BackgroundColor3 = Color3.fromRGB(21, 21, 25),
+    BorderSizePixel = 0,
+    Visible = false,
+    ClipsDescendants = true,
+    ZIndex = 6100,
+})
+addCorner(typeOptionsPopup, 5)
+addStroke(typeOptionsPopup)
+
+local typeConfigs = {
+    Main = {button = settingsButton, mode = "Toggle", keyCode = nil, mouseButton = nil, setValue = setHelloToggle},
+    Right = {button = rightSettingsButton, mode = "Toggle", keyCode = nil, mouseButton = nil, setValue = setRightToggle},
+}
+local activeToggleSettings = nil
+local keybindCaptureActive = false
+local ignoreInitialMouseClick = false
+
+local function getSettingsViewport()
+    local size = ScreenGui.AbsoluteSize
+    if size.X <= 0 or size.Y <= 0 then
+        local currentCamera = workspace.CurrentCamera
+        size = currentCamera and currentCamera.ViewportSize or Vector2.new(1280, 720)
+    end
+    return size
+end
+
+local function positionSettingsPopup(button)
+    local screenOrigin = ScreenGui.AbsolutePosition
+    local viewportSize = getSettingsViewport()
+    local popupSize = toggleSettingsPopup.AbsoluteSize
+    local buttonPosition = button.AbsolutePosition
+    local buttonSize = button.AbsoluteSize
+    local x = buttonPosition.X - screenOrigin.X + buttonSize.X - popupSize.X
+    local y = buttonPosition.Y - screenOrigin.Y + buttonSize.Y + 5
+    x = math.clamp(x, 8, math.max(8, viewportSize.X - popupSize.X - 8))
+    y = math.clamp(y, 8, math.max(8, viewportSize.Y - popupSize.Y - 8))
+    toggleSettingsPopup.Position = UDim2.fromOffset(x, y)
+end
+
+local function positionTypeOptions()
+    local screenOrigin = ScreenGui.AbsolutePosition
+    local viewportSize = getSettingsViewport()
+    local popupSize = typeOptionsPopup.AbsoluteSize
+    local buttonPosition = typeButton.AbsolutePosition
+    local buttonSize = typeButton.AbsoluteSize
+    local x = buttonPosition.X - screenOrigin.X
+    local y = buttonPosition.Y - screenOrigin.Y + buttonSize.Y + 4
+    x = math.clamp(x, 8, math.max(8, viewportSize.X - popupSize.X - 8))
+    y = math.clamp(y, 8, math.max(8, viewportSize.Y - popupSize.Y - 8))
+    typeOptionsPopup.Position = UDim2.fromOffset(x, y)
+end
+
+local function setToggleSettingsOpen(open, config)
+    if open and (not config or not config.button) then
+        return
+    end
+    if open then
+        activeToggleSettings = config
+        keybindBox.Text = config.displayName or ""
+        typeButtonText.Text = config.mode
+        positionSettingsPopup(config.button)
+        toggleSettingsPopup.Visible = true
+        typeOptionsPopup.Visible = false
+        toggleSettingsPopup.BackgroundTransparency = 0
+    else
+        activeToggleSettings = nil
+        keybindCaptureActive = false
+        if keybindBox:IsFocused() then
+            keybindBox:ReleaseFocus()
+        end
+        typeOptionsPopup.Visible = false
+        toggleSettingsPopup.Visible = false
+    end
+end
+
+local function keyNameFromCode(keyCode)
+    local name = keyCode.Name
+    local numpadNames = {
+        KeypadZero = "Numpad 0", KeypadOne = "Numpad 1", KeypadTwo = "Numpad 2",
+        KeypadThree = "Numpad 3", KeypadFour = "Numpad 4", KeypadFive = "Numpad 5",
+        KeypadSix = "Numpad 6", KeypadSeven = "Numpad 7", KeypadEight = "Numpad 8",
+        KeypadNine = "Numpad 9", KeypadEnter = "Numpad Enter", KeypadDecimal = "Numpad .",
+        KeypadDivide = "Numpad /", KeypadMultiply = "Numpad *", KeypadSubtract = "Numpad -",
+        KeypadAdd = "Numpad +",
+    }
+    return numpadNames[name] or name:gsub("(%l)(%u)", "%1 %2")
+end
+
+local function inputDisplayName(input)
+    local mouseNames = {
+        [Enum.UserInputType.MouseButton1] = "Mouse 1",
+        [Enum.UserInputType.MouseButton2] = "Mouse 2",
+        [Enum.UserInputType.MouseButton3] = "Mouse 3",
+    }
+    if mouseNames[input.UserInputType] then
+        return mouseNames[input.UserInputType]
+    end
+    if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+        return keyNameFromCode(input.KeyCode)
+    end
+    return nil
+end
+
+local function inputMatchesConfig(input, config)
+    if config.mouseButton then
+        return input.UserInputType == config.mouseButton
+    end
+    return config.keyCode ~= nil and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == config.keyCode
+end
+
+local function captureToggleInput(input)
+    local displayName = inputDisplayName(input)
+    if not displayName or not activeToggleSettings then
+        return false
+    end
+    local config = activeToggleSettings
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        config.keyCode = input.KeyCode
+        config.mouseButton = nil
+    else
+        config.mouseButton = input.UserInputType
+        config.keyCode = nil
+    end
+    config.displayName = displayName
+    keybindBox.Text = displayName
+    keybindCaptureActive = false
+    keybindBox:ReleaseFocus()
+    return true
+end
+
+keybindBox.Focused:Connect(function()
+    if activeToggleSettings then
+        keybindCaptureActive = true
+        keybindBox.Text = ""
+        ignoreInitialMouseClick = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+    end
+end)
+
+keybindBox.FocusLost:Connect(function()
+    if keybindCaptureActive then
+        keybindCaptureActive = false
+    end
+end)
+
+local function applySettingsType(config, mode)
+    config.mode = mode
+    if config == typeConfigs.Main then
+        helloSettingsMode = mode
+    elseif config == typeConfigs.Right then
+        rightSettingsMode = mode
+    end
+    typeButtonText.Text = mode
+    if mode == "Always on" then
+        config.setValue(true)
+    elseif mode == "Hold on" then
+        config.setValue(false)
+    end
+end
+
+for index, mode in ipairs(TOGGLE_SETTINGS_TYPES) do
+    local option = create("TextButton", typeOptionsPopup, {
+        Name = "TypeOption_" .. string.gsub(mode, "%s+", ""),
+        Position = UDim2.fromOffset(4, 4 + (index - 1) * 24),
+        Size = UDim2.new(1, -8, 0, 22),
+        BackgroundColor3 = COLORS.SelectBg,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        ZIndex = 6101,
+    })
+    addCorner(option, 4)
+    local optionLabel = makeText(option, mode, UDim2.new(1, -14, 1, 0), UDim2.fromOffset(8, 0), 11, COLORS.TabIdle, Enum.Font.GothamMedium)
+    optionLabel.ZIndex = 6102
+    option.MouseEnter:Connect(function()
+        tween("toggle_type_option_" .. index, option, 0.12, {BackgroundTransparency = 0.35})
+        tween("toggle_type_label_" .. index, optionLabel, 0.12, {TextColor3 = COLORS.Title})
+    end)
+    option.MouseLeave:Connect(function()
+        tween("toggle_type_option_" .. index, option, 0.12, {BackgroundTransparency = 1})
+        tween("toggle_type_label_" .. index, optionLabel, 0.12, {TextColor3 = COLORS.TabIdle})
+    end)
+    option.Activated:Connect(function()
+        if activeToggleSettings then
+            applySettingsType(activeToggleSettings, mode)
+        end
+        typeOptionsPopup.Visible = false
+    end)
+end
+
+typeButton.Activated:Connect(function()
+    if not activeToggleSettings then
+        return
+    end
+    if typeOptionsPopup.Visible then
+        typeOptionsPopup.Visible = false
+    else
+        positionTypeOptions()
+        typeOptionsPopup.Visible = true
+    end
+end)
+
+typeButton.MouseEnter:Connect(function()
+    tween("toggle_settings_type_hover", typeButton, 0.12, {BackgroundColor3 = Color3.fromRGB(48, 48, 56)})
+end)
+typeButton.MouseLeave:Connect(function()
+    tween("toggle_settings_type_hover", typeButton, 0.12, {BackgroundColor3 = Color3.fromRGB(39, 39, 45)})
+end)
+
+local function connectSettingsButton(button, config)
+    if not button then
+        return
+    end
+    button.Activated:Connect(function()
+        if activeToggleSettings == config then
+            setToggleSettingsOpen(false)
+        else
+            setToggleSettingsOpen(true, config)
+        end
+    end)
+end
+
+connectSettingsButton(settingsButton, typeConfigs.Main)
+connectSettingsButton(rightSettingsButton, typeConfigs.Right)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if keybindCaptureActive then
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and ignoreInitialMouseClick then
+            return
+        end
+        if captureToggleInput(input) then
+            return
+        end
+    end
+    if gameProcessed or UserInputService:GetFocusedTextBox() then
+        return
+    end
+    for _, config in pairs(typeConfigs) do
+        if inputMatchesConfig(input, config) then
+            if config.mode == "Toggle" then
+                if config == typeConfigs.Main then
+                    config.setValue(not toggleEnabled)
+                elseif config == typeConfigs.Right then
+                    config.setValue(not rightToggleEnabled)
+                end
+            elseif config.mode == "Hold on" then
+                config.setValue(true)
+            elseif config.mode == "Always on" then
+                config.setValue(true)
+            end
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if ignoreInitialMouseClick and input.UserInputType == Enum.UserInputType.MouseButton1 then
+        ignoreInitialMouseClick = false
+        return
+    end
+    for _, config in pairs(typeConfigs) do
+        if config.mode == "Hold on" and inputMatchesConfig(input, config) then
+            config.setValue(false)
+        end
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input)
+    if not toggleSettingsPopup.Visible or keybindCaptureActive then
+        return
+    end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+    local point = Vector2.new(input.Position.X, input.Position.Y)
+    local function contains(guiObject)
+        local position = guiObject.AbsolutePosition
+        local size = guiObject.AbsoluteSize
+        return point.X >= position.X and point.X <= position.X + size.X
+            and point.Y >= position.Y and point.Y <= position.Y + size.Y
+    end
+    if not contains(toggleSettingsPopup) and not contains(typeOptionsPopup)
+        and not (settingsButton and contains(settingsButton))
+        and not (rightSettingsButton and contains(rightSettingsButton)) then
+        setToggleSettingsOpen(false)
+    end
 end)
 
 local sliderMin = math.min(SLIDER_SETTINGS.min, SLIDER_SETTINGS.max)
@@ -567,7 +998,6 @@ local sliderKnob = create("Frame", sliderTrack, {
 	ZIndex = 8,
 })
 addCorner(sliderKnob, 6)
-
 local sliderInput = create("TextBox", rightGroupBox, {
 	Name = "SliderInput",
 	Position = UDim2.new(1, -(spacing + 46), 0, sliderControlsY),
@@ -1240,109 +1670,140 @@ addCorner(conditionalKnob, 7)
 
 local hiddenRowY = conditionalRowY + 30 + 2
 
--- CanvasGroup so the whole nested row can fade via GroupTransparency.
-local hiddenRow = create("CanvasGroup", secondGroupBox, {
-	Name = "HiddenToggleRow",
-	Position = UDim2.fromOffset(spacing, conditionalRowY),
-	Size = UDim2.new(1, -(spacing * 2), 0, 40),
-	BackgroundColor3 = COLORS.SelectBg,
-	BackgroundTransparency = 1,
-	GroupTransparency = 1,
-	BorderSizePixel = 0,
-	Visible = false,
-	ZIndex = 5,
-})
-addCorner(hiddenRow, 5)
-
-local hiddenHitArea = create("TextButton", hiddenRow, {
-	Name = "HitArea",
-	Size = UDim2.new(1, 0, 1, 0),
-	BackgroundTransparency = 1,
-	BorderSizePixel = 0,
-	Text = "",
-	AutoButtonColor = false,
-	Active = true,
-	ZIndex = 6,
-})
-
-local hiddenLabel = makeText(
-	hiddenRow,
-	"no longer hidden!",
-	UDim2.new(1, -66, 1, 0),
-	UDim2.fromOffset(0, 0),
-	13,
-	COLORS.TabIdle,
-	Enum.Font.GothamMedium
-)
-hiddenLabel.Name = "ToggleLabel"
-hiddenLabel.ZIndex = 6
-hiddenLabel.Active = false
-
-local hiddenTrack = create("Frame", hiddenRow, {
-	Name = "ToggleTrack",
-	Position = UDim2.new(1, -(36 + spacing), 0.5, -10),
-	Size = UDim2.fromOffset(36, 20),
-	BackgroundColor3 = Color3.fromRGB(57, 57, 64),
-	BorderSizePixel = 0,
-	ZIndex = 6,
-})
-addCorner(hiddenTrack, 10)
-
-local hiddenKnob = create("Frame", hiddenTrack, {
-	Name = "ToggleKnob",
-	Position = UDim2.fromOffset(3, 3),
-	Size = UDim2.fromOffset(14, 14),
-	BackgroundColor3 = Color3.fromRGB(190, 190, 198),
-	BorderSizePixel = 0,
-	ZIndex = 7,
-})
-addCorner(hiddenKnob, 7)
-
-local conditionalEnabled = false
-local hiddenEnabled = false
-local hiddenRowVisible = false
-local hiddenRowRevision = 0
+-- Generic conditional-row system: any content type (a toggle, a slider,
+-- or a dropdown) can be wrapped in a CanvasGroup that slides/fades in
+-- when its controlling row is enabled; the group box resizes to fit.
+local conditionalRows = {}
 
 local function secondGroupTargetHeight()
-	-- Collapsed height stops below the conditional row; expanded height
-	-- also includes the nested "no longer hidden!" row.
-	return (hiddenRowVisible and hiddenRowY or conditionalRowY) + 30 + spacing
+	-- Collapsed height stops below the conditional row; each visible
+	-- conditional row extends the box to its own bottom edge.
+	local bottom = conditionalRowY + 30
+	for _, entry in ipairs(conditionalRows) do
+		if entry.visible then
+			bottom = math.max(bottom, entry.y + entry.height)
+		end
+	end
+	return bottom + spacing
 end
 
-local function setHiddenRowShown(shown)
-	if hiddenRowVisible == shown then
-		return
-	end
-
-	hiddenRowVisible = shown
-	hiddenRowRevision += 1
-	local revision = hiddenRowRevision
-
-	-- The group box grows/shrinks in sync with the nested row sliding in/out.
+local function refreshSecondGroupSize()
 	tween("second_group_size", secondGroupBox, 0.24, {
 		Size = UDim2.fromOffset(secondGroupBox.AbsoluteSize.X, secondGroupTargetHeight()),
 	}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+end
+
+local function setConditionalRowShown(entry, shown)
+	if entry.visible == shown then
+		return
+	end
+
+	entry.visible = shown
+	entry.revision += 1
+	local revision = entry.revision
+
+	-- The group box grows/shrinks in sync with the nested row sliding in/out.
+	refreshSecondGroupSize()
 
 	if shown then
-		hiddenRow.Visible = true
-		hiddenRow.Position = UDim2.fromOffset(spacing, conditionalRowY)
-		tween("hidden_row_reveal", hiddenRow, 0.24, {
-			Position = UDim2.fromOffset(spacing, hiddenRowY),
+		entry.row.Visible = true
+		entry.row.Position = UDim2.fromOffset(spacing, entry.y - entry.height - 2)
+		tween("conditional_row_" .. entry.id, entry.row, 0.24, {
+			Position = UDim2.fromOffset(spacing, entry.y),
 			GroupTransparency = 0,
 		}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 	else
 		-- Fade the row out in place while the group box shrinks around it,
 		-- so nothing slides up over the row above; clipping hides it.
-		local hideTween = tween("hidden_row_reveal", hiddenRow, 0.18, {
+		local hideTween = tween("conditional_row_" .. entry.id, entry.row, 0.18, {
 			GroupTransparency = 1,
 		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		hideTween.Completed:Connect(function()
-			if hiddenRowRevision == revision and not hiddenRowVisible then
-				hiddenRow.Visible = false
+			if entry.revision == revision and not entry.visible then
+				entry.row.Visible = false
 			end
 		end)
 	end
 end
+
+-- Builds a conditionally-revealed row. `buildContent` receives the row's
+-- CanvasGroup and can parent any control into it -- a toggle, a slider
+-- (title + track + input), or a dropdown (title + button) -- laid out to
+-- fill the given `height`.
+local function createConditionalRow(id, y, height, buildContent)
+	local row = create("CanvasGroup", secondGroupBox, {
+		Name = id,
+		Position = UDim2.fromOffset(spacing, y),
+		Size = UDim2.new(1, -(spacing * 2), 0, height),
+		BackgroundColor3 = COLORS.SelectBg,
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 5,
+	})
+	addCorner(row, 5)
+
+	buildContent(row)
+
+	local entry = { id = id, row = row, y = y, height = height, visible = false, revision = 0 }
+	table.insert(conditionalRows, entry)
+	return entry, row
+end
+
+local hiddenHitArea
+local hiddenLabel
+local hiddenTrack
+local hiddenKnob
+
+local hiddenEntry, hiddenRow = createConditionalRow("HiddenToggleRow", hiddenRowY, 30, function(row)
+	hiddenHitArea = create("TextButton", row, {
+		Name = "HitArea",
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		Active = true,
+		ZIndex = 6,
+	})
+
+	hiddenLabel = makeText(
+		row,
+		"no longer hidden!",
+		UDim2.new(1, -66, 1, 0),
+		UDim2.fromOffset(0, 0),
+		13,
+		COLORS.TabIdle,
+		Enum.Font.GothamMedium
+	)
+	hiddenLabel.Name = "ToggleLabel"
+	hiddenLabel.ZIndex = 6
+	hiddenLabel.Active = false
+
+	hiddenTrack = create("Frame", row, {
+		Name = "ToggleTrack",
+		Position = UDim2.new(1, -(36 + spacing), 0.5, -10),
+		Size = UDim2.fromOffset(36, 20),
+		BackgroundColor3 = Color3.fromRGB(57, 57, 64),
+		BorderSizePixel = 0,
+		ZIndex = 6,
+	})
+	addCorner(hiddenTrack, 10)
+
+	hiddenKnob = create("Frame", hiddenTrack, {
+		Name = "ToggleKnob",
+		Position = UDim2.fromOffset(3, 3),
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundColor3 = Color3.fromRGB(190, 190, 198),
+		BorderSizePixel = 0,
+		ZIndex = 7,
+	})
+	addCorner(hiddenKnob, 7)
+end)
+
+local conditionalEnabled = false
+local hiddenEnabled = false
 
 local function setConditionalToggle(enabled)
 	conditionalEnabled = enabled
@@ -1356,7 +1817,7 @@ local function setConditionalToggle(enabled)
 			BackgroundColor3 = enabled and Color3.fromRGB(245, 249, 255) or Color3.fromRGB(190, 190, 198),
 	})
 
-	setHiddenRowShown(enabled)
+	setConditionalRowShown(hiddenEntry, enabled)
 end
 
 conditionalRow.MouseEnter:Connect(function()
@@ -1535,8 +1996,7 @@ local transparencyTrack = create("Frame", colorPopup, {
 	BackgroundColor3 = Color3.fromRGB(39, 39, 45),
 	BackgroundTransparency = 0,
 	BorderSizePixel = 0,
-	ClipsDescendants = false,
-	ZIndex = 81,
+	ClipsDescendants = false,	ZIndex = 81,
 })
 addCorner(transparencyTrack, 4)
 
@@ -2412,16 +2872,71 @@ local avatar = create("ImageLabel", profileBar, {
 })
 addCorner(avatar, 6)
 
+local profileInfo = create("Frame", profileBar, {
+	Name = "ProfileInfo",
+	Position = UDim2.fromOffset(42, 0),
+	Size = UDim2.new(1, -54, 1, 0),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ZIndex = 5,
+})
+
+create("UIListLayout", profileInfo, {
+	FillDirection = Enum.FillDirection.Horizontal,
+	VerticalAlignment = Enum.VerticalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 10),
+})
+
 local usernameLabel = makeText(
-	profileBar,
+	profileInfo,
 	LocalPlayer.Name,
-	UDim2.new(1, -80, 1, 0),
-	UDim2.fromOffset(42, 0),
+	UDim2.new(0, 0, 1, 0),
+	UDim2.fromOffset(0, 0),
 	12,
 	COLORS.Username,
 	Enum.Font.GothamBold
 )
+usernameLabel.Name = "Username"
+usernameLabel.AutomaticSize = Enum.AutomaticSize.X
+usernameLabel.LayoutOrder = 1
 usernameLabel.ZIndex = 5
+
+create("Frame", profileInfo, {
+	Name = "ClockDivider",
+	Size = UDim2.fromOffset(1, 14),
+	BackgroundColor3 = COLORS.Divider,
+	BorderSizePixel = 0,
+	LayoutOrder = 2,
+	ZIndex = 5,
+})
+
+local clockLabel = makeText(
+	profileInfo,
+	os.date("%H:%M:%S"),
+	UDim2.new(0, 0, 1, 0),
+	UDim2.fromOffset(0, 0),
+	12,
+	COLORS.TabIdle,
+	Enum.Font.GothamMedium
+)
+clockLabel.Name = "LocalTime"
+clockLabel.AutomaticSize = Enum.AutomaticSize.X
+clockLabel.LayoutOrder = 3
+clockLabel.ZIndex = 5
+
+-- Live local time (hour:minute:second), refreshed as the wall clock ticks.
+task.spawn(function()
+	local last = ""
+	while true do
+		local now = os.date("%H:%M:%S")
+		if now ~= last then
+			last = now
+			clockLabel.Text = now
+		end
+		task.wait(0.1)
+	end
+end)
 
 local resizeGrip = create("TextButton", window, {
 	Name = "ResizeGrip",
@@ -2480,7 +2995,6 @@ local miniBar = create("CanvasGroup", Root, {
 })
 addCorner(miniBar, 6)
 addStroke(miniBar)
-
 local miniAvatar = create("ImageLabel", miniBar, {
 	Name = "MiniAvatar",
 	BackgroundColor3 = COLORS.SelectBg,
@@ -3092,6 +3606,9 @@ local function setGuiVisible(visible)
 	if not visible then
 		endDrag()
 		closeColorPicker()
+		if typeof(setToggleSettingsOpen) == "function" then
+			setToggleSettingsOpen(false)
+		end
 		local fade = tween(
 			"root_visibility",
 			Root,

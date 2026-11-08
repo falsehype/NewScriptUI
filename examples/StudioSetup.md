@@ -6,6 +6,6 @@
 4. Open [`src/NewScriptUI.txt`](../src/NewScriptUI.txt) in this repository.
 5. Copy the complete file contents into the LocalScript.
 6. Start a client play test. The UI should appear for the local player.
-7. Press `RightShift` to hide or show the interface.
+7. Press `RightShift` to hide or show the interface.\n8. Click the gear beside either primary demo toggle to assign a key and choose its activation mode. Set `TOGGLE_SETTINGS_ENABLED` to `false` near the top of the script to hide the gear buttons.
 
 The current file is a preconfigured prototype, not a reusable ModuleScript. It creates the demo UI directly. Avoid placing it in a server Script because it uses client-only services and the local player's PlayerGui.

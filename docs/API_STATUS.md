@@ -2,7 +2,7 @@
 
 ## Current release
 
-The current project is a single-file UI preset stored at `src/Midnight UI.txt`. Running it in a LocalScript creates one preconfigured demo interface.
+The current project is a single-file UI preset stored at `src/MidnightUI.lua`. Running it in a LocalScript creates one preconfigured demo interface.
 
 The demo now includes bottom-right hover tooltips with configurable per-toggle delays (one-second default), and shared pointer-coordinate handling for consistent hit testing. The demo also includes settings gears beside its two primary toggle rows. Each gear opens an overlay with an unassigned-by-default key field and an activation-type dropdown. Available modes are `Always on`, `Hold on`, and `Toggle`. Key capture accepts available keyboard `Enum.KeyCode` values and the first three mouse buttons. See [Toggle settings](TOGGLE_SETTINGS.md) for details.
 

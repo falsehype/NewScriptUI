@@ -2,7 +2,7 @@
 
 ## Current release
 
-The current project is a single-file UI preset stored at `src/NewScriptUI.txt`. Running it in a LocalScript creates one preconfigured demo interface.
+The current project is a single-file UI preset stored at `src/NewScriptUI.txt`. Running it in a LocalScript creates one preconfigured demo interface.\n\nThe demo now includes settings gears beside its two primary toggle rows. Each gear opens an overlay with an unassigned-by-default key field and an activation-type dropdown. Available modes are `Always on`, `Hold on`, and `Toggle`. Key capture accepts available keyboard `Enum.KeyCode` values and the first three mouse buttons. See [Toggle settings](TOGGLE_SETTINGS.md) for details.
 
 It currently does **not** return a library table, and these methods do not exist yet:
 
@@ -22,7 +22,7 @@ The first stable API should support:
 
 - Window creation and configuration
 - Tabs and groupboxes
-- Toggle, dropdown, slider, and color-picker components
+- Toggle, dropdown, slider, and color-picker components\n- Optional toggle settings with keybinds and activation modes
 - Default values and validated configuration
 - `GetValue()`, `SetValue()`, and `OnChanged()`
 - Window and component cleanup

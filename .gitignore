@@ -1,0 +1,13 @@
+# Roblox Studio place/model files
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.tmp
+*.bak

@@ -8,6 +8,8 @@ local SERVICES = {
 	TweenService = game:GetService("TweenService"),
 	RunService = game:GetService("RunService"),
 	GuiService = game:GetService("GuiService"),
+	TextService = game:GetService("TextService"),
+	MarketplaceService = game:GetService("MarketplaceService"),
 }
 
 local PLAYER = {
@@ -16,7 +18,7 @@ local PLAYER = {
 PLAYER.PlayerGui = PLAYER.LocalPlayer:WaitForChild("PlayerGui")
 
 -- Remove either name so upgrading from the old UI does not leave a duplicate.
-for _, guiName in ipairs({"MidnightUI", "NewScriptGui"}) do
+for _, guiName in ipairs({"MidnightUI", "NewScriptGui", "MidnightNotifications"}) do
 	local existing = PLAYER.PlayerGui:FindFirstChild(guiName)
 	if existing then
 		existing:Destroy()
@@ -37,6 +39,10 @@ local COLORS = {
 	Username = Color3.fromRGB(255, 255, 255),
 	Icon = Color3.fromRGB(140, 140, 148),
 	IconHover = Color3.fromRGB(210, 210, 218),
+	-- Settings gear icons use a lighter gray so they read clearly against
+	-- the group background, even when the frame-built fallback glyph shows.
+	IconSetting = Color3.fromRGB(190, 190, 198),
+	IconSettingHover = Color3.fromRGB(235, 235, 242),
 	IconActive = Color3.fromRGB(70, 180, 255),
 	Gray = Color3.fromRGB(140, 140, 148),
 	White = Color3.fromRGB(255, 255, 255),
@@ -45,7 +51,12 @@ local COLORS = {
 local CONFIG = {
 	WINDOW_SIZE = Vector2.new(600, 400),
 	MIN_SIZE = Vector2.new(420, 280),
-	MAX_SIZE = Vector2.new(1100, 800),
+	MAX_SIZE = Vector2.new(3840, 2160),
+	-- CanvasGroups rasterize into a texture capped by the client's graphics
+	-- quality level; past roughly this size the content gets downsampled and
+	-- turns blurry. The window's children are moved into a plain-Frame shell
+	-- whenever the window grows past it (plain Frames have no cap).
+	WINDOW_TEXTURE_LIMIT = 1024,
 	MINI_SIZE = Vector2.new(236, 42),
 	TITLE_H = 36,
 	PROFILE_H = 34,
@@ -64,8 +75,19 @@ local CONFIG = {
 	},
 	DROPDOWN_OPTIONS = {"alfa", "delta", "foxtrot", "november", "bravo", "charlie"},
 	TOGGLE_SETTINGS_ENABLED = true,
-	TOGGLE_SETTINGS_ICON = "rbxassetid://111506353970498",
+	TOGGLE_SETTINGS_ICON = "rbxassetid://110632332724189",
 	TOGGLE_SETTINGS_TYPES = {"Always on", "Hold on", "Toggle"},
+	-- Default text alignment inside feature buttons; each button can override
+	-- it by passing an alignment when it is created.
+	BUTTON_TEXT_ALIGNMENT = Enum.TextXAlignment.Center,
+	-- Press feedback for feature buttons (scale down + darker background).
+	BUTTON_PRESS_SCALE = 0.96,
+	BUTTON_PRESS_COLOR = Color3.fromRGB(33, 33, 38),
+	-- Optional game-name label on the right side of the title bar. The label is
+	-- sanitized to lowercase letters only (no spaces, capitals, emojis,
+	-- symbols, numbers, or brackets) and is hidden when the result is empty.
+	SHOW_GAME_NAME = true,
+	GAME_NAME_COLOR = Color3.fromRGB(125, 125, 135),
 	-- Tooltip delays are in seconds. Override individual toggle names below;
 	-- any toggle without an override uses DEFAULT_DELAY.
 	TOOLTIP_SETTINGS = {
@@ -146,6 +168,255 @@ function F.makeText(parent, text, size, position, fontSize, color, font)
 	})
 end
 
+function F.sanitizeGameName(text)
+	-- Show the name as-is: spaces, capitals, numbers, emojis, symbols,
+	-- brackets — every character is kept. Only stray padding is trimmed.
+	local raw = tostring(text or "")
+	return raw:match("^%s*(.-)%s*$") or ""
+end
+
+-- ============================================================================
+-- Collapsible group boxes.
+-- Every group box gets a chevron button in the top-right corner that slides
+-- the box between its full height and its header (title + divider only).
+-- Scoped in a do-block so its locals free their registers after setup.
+-- ============================================================================
+do
+	local groupCollapseStates = {}
+
+	local function groupBoxHeaderHeight()
+		-- spacing + title + spacing: minimized boxes show only the title row,
+		-- without the separator line underneath it.
+		return CONFIG.spacing * 2 + 18
+	end
+
+	local function groupBoxTargetSize(groupBox, height)
+		local currentSize = groupBox.Size
+		return UDim2.new(currentSize.X.Scale, currentSize.X.Offset, 0, height)
+	end
+
+	-- Keeps a group box title clear of the arrow. Right-aligned titles reserve the
+	-- left side (the arrow flips there); every other alignment reserves the right.
+	function F.layoutGroupBoxTitle(titleLabel)
+		if not titleLabel then
+			return
+		end
+		local leftPadding = CONFIG.spacing
+		local rightPadding = CONFIG.spacing
+		if titleLabel.TextXAlignment == Enum.TextXAlignment.Right then
+			leftPadding = CONFIG.spacing + 22 + CONFIG.spacing
+		else
+			rightPadding = CONFIG.spacing + 22 + CONFIG.spacing
+		end
+		titleLabel.Position = UDim2.fromOffset(leftPadding, CONFIG.spacing)
+		titleLabel.Size = UDim2.new(1, -(leftPadding + rightPadding), 0, 18)
+	end
+
+	function F.registerCollapsibleGroup(groupBox, expandedHeight, titleLabel)
+		groupBox.ClipsDescendants = true
+
+		-- Cloned group boxes may already carry a copied arrow that has no
+		-- connections; replace it with a fresh one.
+		local existingArrow = groupBox:FindFirstChild("GroupCollapseArrow")
+		if existingArrow then
+			existingArrow:Destroy()
+		end
+
+		local arrow = F.create("TextButton", groupBox, {
+			Name = "GroupCollapseArrow",
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -CONFIG.spacing, 0, CONFIG.spacing + 9),
+			Size = UDim2.fromOffset(22, 22),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 6,
+		})
+
+		local chevronLeft = F.create("Frame", arrow, {
+			Name = "ChevronLeft",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, -2, 0.5, 0),
+			Size = UDim2.fromOffset(6, 1.5),
+			Rotation = 42,
+			BackgroundColor3 = COLORS.Gray,
+			BorderSizePixel = 0,
+			ZIndex = 7,
+		})
+		local chevronRight = F.create("Frame", arrow, {
+			Name = "ChevronRight",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 2, 0.5, 0),
+			Size = UDim2.fromOffset(6, 1.5),
+			Rotation = -42,
+			BackgroundColor3 = COLORS.Gray,
+			BorderSizePixel = 0,
+			ZIndex = 7,
+		})
+
+		local state = {
+			group = groupBox,
+			arrow = arrow,
+			collapsed = false,
+			expandedHeight = expandedHeight or groupBox.Size.Y.Offset,
+			followers = {},
+		}
+		groupCollapseStates[groupBox] = state
+
+		-- Mirror the title: left-aligned titles keep the arrow on the right,
+		-- right-aligned titles move the arrow to the left so they never collide.
+		local function applyArrowSide()
+			local titleOnRight = titleLabel
+				and titleLabel.TextXAlignment == Enum.TextXAlignment.Right
+			if titleOnRight then
+				arrow.AnchorPoint = Vector2.new(0, 0.5)
+				arrow.Position = UDim2.new(0, CONFIG.spacing, 0, CONFIG.spacing + 9)
+			else
+				arrow.AnchorPoint = Vector2.new(1, 0.5)
+				arrow.Position = UDim2.new(1, -CONFIG.spacing, 0, CONFIG.spacing + 9)
+			end
+		end
+
+		applyArrowSide()
+
+		if titleLabel then
+			F.layoutGroupBoxTitle(titleLabel)
+			titleLabel:GetPropertyChangedSignal("TextXAlignment"):Connect(function()
+				applyArrowSide()
+				F.layoutGroupBoxTitle(titleLabel)
+			end)
+		end
+
+		local function setArrowColor(color)
+			F.tween("group_arrow_left_" .. groupBox.Name, chevronLeft, 0.12, {
+				BackgroundColor3 = color,
+			})
+			F.tween("group_arrow_right_" .. groupBox.Name, chevronRight, 0.12, {
+				BackgroundColor3 = color,
+			})
+		end
+
+		local function setCollapsed(collapsed, animate)
+			if state.collapsed == collapsed then
+				return
+			end
+			state.collapsed = collapsed
+
+			-- Minimized boxes show the title only, so hide the separator line.
+			local headerDivider = groupBox:FindFirstChild("HeaderDivider")
+			if headerDivider then
+				headerDivider.Visible = not collapsed
+			end
+
+			-- Close anything that floats outside the clipped group box.
+			if collapsed then
+				if F.closeFeatureDropdowns then
+					F.closeFeatureDropdowns()
+				end
+				if F.setDropdownOpen then
+					F.setDropdownOpen(false)
+				end
+				if F.setToggleSettingsOpen then
+					F.setToggleSettingsOpen(false)
+				end
+				if F.closeColorPicker then
+					F.closeColorPicker()
+				end
+				if F.hideFeatureTooltip then
+					F.hideFeatureTooltip()
+				end
+			end
+
+			local targetHeight = collapsed and groupBoxHeaderHeight() or state.expandedHeight
+			local targetSize = groupBoxTargetSize(groupBox, targetHeight)
+			if animate then
+				F.tween("group_collapse_" .. groupBox.Name, groupBox, 0.24, {
+					Size = targetSize,
+				}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+			else
+				groupBox.Size = targetSize
+			end
+
+			-- Move any group boxes stacked underneath in lockstep, so the gap
+			-- left behind closes as the box slides up (and reopens on expand).
+			for _, follower in ipairs(state.followers) do
+				local targetPosition = follower.positionForHeight(targetHeight)
+				if animate then
+					F.tween(
+						"group_follow_" .. groupBox.Name .. "_" .. follower.box.Name,
+						follower.box,
+						0.24,
+						{ Position = targetPosition },
+						Enum.EasingStyle.Quart,
+						Enum.EasingDirection.Out
+					)
+				else
+					follower.box.Position = targetPosition
+				end
+			end
+
+			-- Chevron flips: expanded points down, minimized points up.
+			F.tween("group_arrow_rotate_" .. groupBox.Name, arrow, 0.24, {
+				Rotation = collapsed and 180 or 0,
+			}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		end
+
+		state.setCollapsed = setCollapsed
+
+		arrow.Activated:Connect(function()
+			setCollapsed(not state.collapsed, true)
+		end)
+		arrow.MouseEnter:Connect(function()
+			setArrowColor(COLORS.IconHover)
+		end)
+		arrow.MouseLeave:Connect(function()
+			setArrowColor(COLORS.Gray)
+		end)
+
+		return state
+	end
+
+	function F.setGroupBoxCollapsed(groupBox, collapsed, animate)
+		local state = groupCollapseStates[groupBox]
+		if state then
+			state.setCollapsed(collapsed, animate)
+		end
+	end
+
+	function F.isGroupBoxCollapsed(groupBox)
+		local state = groupCollapseStates[groupBox]
+		return state ~= nil and state.collapsed
+	end
+
+	function F.setGroupBoxExpandedHeight(groupBox, height)
+		local state = groupCollapseStates[groupBox]
+		if state then
+			state.expandedHeight = height
+		end
+	end
+
+	function F.getGroupBoxHeight(groupBox, expandedHeight)
+		if F.isGroupBoxCollapsed(groupBox) then
+			return groupBoxHeaderHeight()
+		end
+		return expandedHeight
+	end
+
+	-- Registers a group box that sits directly below `groupBox`. It receives the
+	-- new height on every collapse/expand and returns its target Position.
+	function F.addGroupBoxFollower(groupBox, followerBox, positionForHeight)
+		local state = groupCollapseStates[groupBox]
+		if not state then
+			return
+		end
+		table.insert(state.followers, {
+			box = followerBox,
+			positionForHeight = positionForHeight,
+		})
+	end
+end
+
 local ScreenGui = F.create("ScreenGui", PLAYER.PlayerGui, {
 	Name = "MidnightUI",
 	ResetOnSpawn = false,
@@ -154,11 +425,15 @@ local ScreenGui = F.create("ScreenGui", PLAYER.PlayerGui, {
 	DisplayOrder = 99,
 })
 
-local Root = F.create("CanvasGroup", ScreenGui, {
+-- Root is a plain Frame, NOT a CanvasGroup: a full-screen CanvasGroup
+-- rasterizes the entire UI into a texture whose resolution is capped by the
+-- client's graphics quality level, which made the whole menu blurry at low
+-- quality. The global show/hide fade therefore targets the top-level
+-- CanvasGroup children directly (see F.setGuiVisible).
+local Root = F.create("Frame", ScreenGui, {
 	Name = "Root",
 	Size = UDim2.fromScale(1, 1),
 	BackgroundTransparency = 1,
-	GroupTransparency = 0,
 })
 
 local getPointerPosition
@@ -173,6 +448,7 @@ local initialPosition = Vector2.new(
 
 local state = {
 	minimized = false,
+	fullscreen = false,
 	guiVisible = true,
 	animating = false,
 	visibilityAnimating = false,
@@ -182,16 +458,10 @@ local state = {
 }
 
 function F.clampToScreen(position, size)
-	local currentCamera = workspace.CurrentCamera
-	if not currentCamera then
-		return position
-	end
-
-	local screenSize = currentCamera.ViewportSize
-	return Vector2.new(
-		math.clamp(position.X, 0, math.max(0, screenSize.X - size.X)),
-		math.clamp(position.Y, 0, math.max(0, screenSize.Y - size.Y))
-	)
+	-- No clamping: the window may be dragged and sized freely, including
+	-- beyond the screen edges. The argument list is kept so existing callers
+	-- stay untouched.
+	return position
 end
 
 local window = F.create("CanvasGroup", Root, {
@@ -241,6 +511,53 @@ local titleLabel = F.makeText(
 titleLabel.TextXAlignment = Enum.TextXAlignment.Center
 titleLabel.ZIndex = 6
 titleLabel.Active = false
+
+do
+	local gameNameLabel = F.makeText(
+		titleBar,
+		F.sanitizeGameName(game.Name),
+		UDim2.new(0.35, 0, 1, 0),
+		UDim2.fromOffset(0, 0),
+		12,
+		CONFIG.GAME_NAME_COLOR,
+		Enum.Font.GothamMedium
+	)
+	gameNameLabel.Name = "GameNameLabel"
+	gameNameLabel.AnchorPoint = Vector2.new(1, 0.5)
+	-- Stop short of the fullscreen + minimize buttons at the far right.
+	gameNameLabel.Position = UDim2.new(1, -66, 0.5, 0)
+	gameNameLabel.TextXAlignment = Enum.TextXAlignment.Right
+	gameNameLabel.ZIndex = 6
+	gameNameLabel.Active = false
+	gameNameLabel.Visible = false
+
+	-- Use the published experience name from MarketplaceService rather than
+	-- the local place name, since they differ for multi-place universes.
+	-- GetProductInfo yields, so fetch it in the background and fall back to
+	-- game.Name if the request fails (offline, private, unsaved place, etc.).
+	local function refreshGameName()
+		if not CONFIG.SHOW_GAME_NAME then
+			gameNameLabel.Visible = false
+			return
+		end
+		local resolvedName = game.Name
+		local ok, productInfo = pcall(function()
+			return SERVICES.MarketplaceService:GetProductInfo(game.PlaceId)
+		end)
+		if ok
+			and type(productInfo) == "table"
+			and type(productInfo.Name) == "string"
+			and productInfo.Name ~= ""
+		then
+			resolvedName = productInfo.Name
+		end
+		gameNameLabel.Text = F.sanitizeGameName(resolvedName)
+		gameNameLabel.Visible = gameNameLabel.Text ~= ""
+	end
+
+	game:GetPropertyChangedSignal("Name"):Connect(refreshGameName)
+	task.spawn(refreshGameName)
+end
 
 F.create("Frame", titleBar, {
 	Name = "TitleDivider",
@@ -310,9 +627,692 @@ local content = F.create("Frame", body, {
 	BorderSizePixel = 0,
 })
 
-local helloGroupBox = F.create("Frame", content, {
+-- Height of the search field. Shared with the bar below so every gap around
+-- it can be derived from CONFIG.spacing.
+local SEARCH_BAR_HEIGHT = 30
+
+-- Everything that used to live directly in "content" now lives here, below
+-- the search bar. Keeping the search bar outside this frame means it is
+-- shared by every tab instead of being duplicated inside group boxes.
+local contentBody = F.create("Frame", content, {
+	Name = "ContentBody",
+	Position = UDim2.fromOffset(0, CONFIG.spacing + SEARCH_BAR_HEIGHT),
+	Size = UDim2.new(1, 0, 1, -(CONFIG.spacing + SEARCH_BAR_HEIGHT)),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ZIndex = 2,
+})
+
+-- ============================================================================
+-- Global search bar. Sits directly under the title bar and spans the content
+-- area, so it is reachable from every tab. Scoped in a do-block so its many
+-- locals free their registers once the bar is built.
+-- ============================================================================
+do
+	local SEARCH_TOP = CONFIG.spacing
+	local SEARCH_TEXT_LEFT = 34
+	local SEARCH_HINT_WIDTH = 62
+	local SEARCH_RESULT_HEIGHT = 26
+	local SEARCH_RESULT_GAP = 3
+	local SEARCH_MAX_RESULTS = 6
+	local SEARCH_INPUT_GAP = 18
+	local SEARCH_EMPTY_HEIGHT = 36
+
+	local searchBar = F.create("TextButton", content, {
+		Name = "SearchBar",
+		Position = UDim2.fromOffset(CONFIG.spacing, SEARCH_TOP),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, SEARCH_BAR_HEIGHT),
+		BackgroundColor3 = Color3.fromRGB(16, 16, 19),
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 20,
+	})
+	F.addCorner(searchBar, 7)
+	local searchStroke = F.addStroke(searchBar)
+	searchStroke.Transparency = 0.35
+
+	local searchIcon = F.create("ImageLabel", searchBar, {
+		Name = "SearchIcon",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 11, 0.5, 0),
+		Size = UDim2.fromOffset(16, 16),
+		BackgroundTransparency = 1,
+		Image = "rbxassetid://101381089913676",
+		ImageColor3 = COLORS.Icon,
+		ScaleType = Enum.ScaleType.Fit,
+		ZIndex = 21,
+	})
+
+	local searchHint = F.makeText(
+		searchBar,
+		"Shift + K",
+		UDim2.new(0, SEARCH_HINT_WIDTH, 1, 0),
+		UDim2.new(1, -(SEARCH_HINT_WIDTH + 12), 0, 0),
+		11,
+		COLORS.Muted,
+		Enum.Font.GothamMedium
+	)
+	searchHint.Name = "SearchHint"
+	searchHint.TextXAlignment = Enum.TextXAlignment.Right
+	searchHint.ZIndex = 21
+	searchHint.Active = false
+
+	-- Focused state widens the input into the space the hint gives up.
+	local UNFOCUSED_INPUT_SIZE = UDim2.new(
+		1,
+		-(SEARCH_TEXT_LEFT + SEARCH_HINT_WIDTH + SEARCH_INPUT_GAP),
+		1,
+		0
+	)
+	local FOCUSED_INPUT_SIZE = UDim2.new(1, -(SEARCH_TEXT_LEFT + 12), 1, 0)
+
+	local searchBox = F.create("TextBox", searchBar, {
+		Name = "SearchInput",
+		Position = UDim2.fromOffset(SEARCH_TEXT_LEFT, 0),
+		Size = UNFOCUSED_INPUT_SIZE,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = "",
+		PlaceholderText = "Search Midnight-UI...",
+		PlaceholderColor3 = COLORS.Muted,
+		TextColor3 = COLORS.Title,
+		TextSize = 13,
+		Font = Enum.Font.GothamMedium,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		ClearTextOnFocus = false,
+		MultiLine = false,
+		ZIndex = 21,
+	})
+
+	local resultsPanel = F.create("CanvasGroup", content, {
+		Name = "SearchResults",
+		Position = UDim2.fromOffset(CONFIG.spacing, SEARCH_TOP + SEARCH_BAR_HEIGHT + 2),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 0),
+		BackgroundColor3 = Color3.fromRGB(16, 16, 19),
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		GroupTransparency = 1,
+		Visible = false,
+		ZIndex = 25,
+	})
+	F.addCorner(resultsPanel, 7)
+	local resultsStroke = F.addStroke(resultsPanel)
+	resultsStroke.Transparency = 0.15
+
+	F.create("UIPadding", resultsPanel, {
+		PaddingTop = UDim.new(0, 5),
+		PaddingBottom = UDim.new(0, 5),
+		PaddingLeft = UDim.new(0, 5),
+		PaddingRight = UDim.new(0, 5),
+	})
+	F.create("UIListLayout", resultsPanel, {
+		Padding = UDim.new(0, SEARCH_RESULT_GAP),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	})
+
+	local currentResults = {}
+	local resultsVisible = false
+	local searchFocused = false
+	local searchHovered = false
+	local shortcutKeyPending = false
+
+	local function applySearchVisuals()
+		F.tween("search_bar_bg", searchBar, 0.16, {
+			BackgroundColor3 = searchFocused
+				and Color3.fromRGB(21, 21, 25)
+				or (searchHovered and Color3.fromRGB(19, 19, 23) or Color3.fromRGB(16, 16, 19)),
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		F.tween("search_bar_stroke", searchStroke, 0.16, {
+			Color = searchFocused and COLORS.Accent or (searchHovered and COLORS.TabHover or COLORS.Border),
+			Transparency = searchFocused and 0 or (searchHovered and 0.05 or 0.35),
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		F.tween("search_bar_icon", searchIcon, 0.16, {
+			ImageColor3 = searchFocused and COLORS.Accent
+				or (searchHovered and COLORS.IconHover or COLORS.Icon),
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	end
+
+	local function resultTargetHeight()
+		local count = #currentResults
+		if count == 0 then
+			-- One row tall, matching the padding used by a real result row.
+			return SEARCH_EMPTY_HEIGHT
+		end
+		return 10 + count * SEARCH_RESULT_HEIGHT + (count - 1) * SEARCH_RESULT_GAP
+	end
+
+	local function openResults()
+		resultsVisible = true
+		resultsPanel.Visible = true
+		F.tween("search_results_size", resultsPanel, 0.18, {
+			Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, resultTargetHeight()),
+		}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		F.tween("search_results_fade", resultsPanel, 0.16, {
+			GroupTransparency = 0,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	end
+
+	local function closeResults()
+		resultsVisible = false
+		F.tween("search_results_size", resultsPanel, 0.13, {
+			Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 0),
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		local fade = F.tween("search_results_fade", resultsPanel, 0.13, {
+			GroupTransparency = 1,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		fade.Completed:Connect(function()
+			if not resultsVisible then
+				resultsPanel.Visible = false
+			end
+		end)
+	end
+
+	local function clearResultRows()
+		for _, child in ipairs(resultsPanel:GetChildren()) do
+			if child:IsA("TextButton") then
+				child:Destroy()
+			end
+		end
+	end
+
+	-- Fuzzy search helpers. Kept in a single table so the whole matcher only
+	-- costs one register in the main chunk (which sits near Luau's 200 limit).
+	local searchUtil = {}
+
+	function searchUtil.normalize(text)
+		local lowered = string.lower(tostring(text or ""))
+		local spaced = string.gsub(lowered, "[^%w]+", " ")
+		return string.match(spaced, "^%s*(.-)%s*$")
+	end
+
+	function searchUtil.words(normalized)
+		local list = {}
+		for word in string.gmatch(normalized, "%S+") do
+			table.insert(list, word)
+		end
+		return list
+	end
+
+	-- Bounded Levenshtein distance: bails out once the distance definitely
+	-- exceeds `limit`, which keeps typo tolerance cheap.
+	function searchUtil.distance(a, b, limit)
+		local lengthA, lengthB = #a, #b
+		if math.abs(lengthA - lengthB) > limit then
+			return limit + 1
+		end
+		local previous = {}
+		local current = {}
+		for index = 0, lengthB do
+			previous[index] = index
+		end
+		for i = 1, lengthA do
+			current[0] = i
+			local rowMinimum = i
+			for j = 1, lengthB do
+				local cost = string.sub(a, i, i) == string.sub(b, j, j) and 0 or 1
+				local value = math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+				current[j] = value
+				if value < rowMinimum then
+					rowMinimum = value
+				end
+			end
+			if rowMinimum > limit then
+				return limit + 1
+			end
+			previous, current = current, previous
+		end
+		return previous[lengthB]
+	end
+
+	-- Character-in-order match. "ntf" still finds "notifications", but the match
+	-- must begin at a word boundary so mid-word coincidences do not create noise.
+	function searchUtil.subsequence(needle, haystack)
+		local position = 1
+		local gaps = 0
+		local last = 0
+		local started = false
+		for index = 1, #haystack do
+			local char = string.sub(haystack, index, index)
+			if not started then
+				if char == string.sub(needle, 1, 1)
+					and (index == 1 or string.sub(haystack, index - 1, index - 1) == " ")
+				then
+					started = true
+					last = index
+					position = 2
+					if position > #needle then
+						return 64
+					end
+				end
+			elseif char == string.sub(needle, position, position) then
+				gaps += index - last - 1
+				last = index
+				position += 1
+				if position > #needle then
+					return math.max(12, 64 - gaps * 2)
+				end
+			end
+		end
+		return 0
+	end
+
+	function searchUtil.tokenScore(token, entry)
+		if #token < 2 then
+			for _, word in ipairs(entry.words) do
+				if string.find(word, token, 1, true) then
+					return 120
+				end
+			end
+			return 0
+		end
+		local best = 0
+		for _, word in ipairs(entry.words) do
+			if word == token then
+				best = math.max(best, 240)
+			elseif string.sub(word, 1, #token) == token then
+				best = math.max(best, 190)
+			elseif string.find(word, token, 1, true) then
+				best = math.max(best, 140)
+			elseif #token >= 4 then
+				local limit = math.max(1, math.floor(#token * 0.34))
+				local distance = searchUtil.distance(token, word, limit)
+				if distance <= limit then
+					best = math.max(best, 120 - distance * 25)
+				end
+			end
+		end
+		if best == 0 and #token >= 4 then
+			local limit = math.max(1, math.floor(#token * 0.4))
+			local distance = searchUtil.distance(token, entry.normalized, limit)
+			if distance <= limit then
+				best = 70 - distance * 10
+			end
+		end
+		return best
+	end
+
+	function searchUtil.score(entry, query, tokens)
+		local normalized = entry.normalized
+		local score = 0
+		local foundAt = string.find(normalized, query, 1, true)
+		if normalized == query then
+			score += 1200
+		elseif foundAt == 1 then
+			score += 520
+		elseif foundAt then
+			score += 380 - math.min(120, (foundAt - 1) * 6)
+		elseif #query >= 3 then
+			local limit = math.max(1, math.floor(#query * 0.3))
+			local distance = searchUtil.distance(query, normalized, limit)
+			if distance <= limit then
+				score += 260 - distance * 20
+			end
+			score += searchUtil.subsequence(query, normalized)
+		end
+		if #query < 5 then
+			-- Very short queries are typo-prone, so only do per-word fuzzy work
+			-- for queries long enough to be meaningful.
+			return score
+		end
+		if #tokens > 1 then
+			local matched = 0
+			local missing = 0
+			for _, token in ipairs(tokens) do
+				local tokenScore = searchUtil.tokenScore(token, entry)
+				if tokenScore > 0 then
+					matched += 1
+					score += tokenScore
+				else
+					missing += 1
+				end
+			end
+			if matched == 0 then
+				return 0
+			end
+			-- Every missing word pushes the candidate down so partial matches
+			-- never outrank results that contain the whole query.
+			score -= missing * 150
+		else
+			for _, token in ipairs(tokens) do
+				score += searchUtil.tokenScore(token, entry)
+			end
+		end
+		return score
+	end
+
+	-- Conditional features live inside invisible CanvasGroup blocks. Searching
+	-- should only suggest them once their toggle has revealed them.
+	function searchUtil.isHidden(target)
+		local node = target
+		while node and node ~= contentBody do
+			if node:IsA("CanvasGroup") then
+				-- Reveal blocks tag themselves the moment they change state, so the
+				-- index never lags behind the fade animation.
+				if node:GetAttribute("MidnightSearchShown") == false then
+					return true
+				end
+				if not node.Visible then
+					return true
+				end
+			end
+			node = node.Parent
+		end
+		return false
+	end
+
+	-- Dropdown buttons display the currently selected option as their text. That
+	-- is a state value, not a feature name, so it is skipped: the dropdown's own
+	-- title label is what should show up in the results.
+	function searchUtil.isDropdownValue(target)
+		local parent = target.Parent
+		if parent and parent:IsA("GuiButton") then
+			return parent:FindFirstChild("ChevronLeft") ~= nil
+				or parent:FindFirstChild("ChevronRight") ~= nil
+		end
+		return false
+	end
+
+	function searchUtil.buildIndex()
+		local index = {}
+		local function scan(parent)
+			for _, child in ipairs(parent:GetChildren()) do
+				if (child:IsA("TextLabel") or child:IsA("TextButton"))
+					and not searchUtil.isDropdownValue(child)
+					and not searchUtil.isHidden(child)
+				then
+					local raw = child.Text
+					if type(raw) == "string" then
+						local trimmed = string.match(raw, "^%s*(.-)%s*$")
+						if trimmed ~= "" and string.find(trimmed, "%a") then
+							local normalized = searchUtil.normalize(trimmed)
+							if normalized ~= "" then
+								table.insert(index, {
+									target = child,
+									text = trimmed,
+									normalized = normalized,
+									words = searchUtil.words(normalized),
+								})
+							end
+						end
+					end
+				end
+				scan(child)
+			end
+		end
+		scan(contentBody)
+		return index
+	end
+
+	-- Called whenever a conditional feature is revealed or hidden so the cached
+	-- scan stays in sync. Without this, a newly shown feature would stay missing
+	-- until the search box was focused again.
+	function F.invalidateSearchIndex()
+		searchUtil.index = nil
+	end
+
+	-- Rebuilt on every focus, then reused while typing. Scans the whole content
+	-- body (including hidden pages) so the bar stays global.
+	function searchUtil.collect(query, maxResults)
+		local normalizedQuery = searchUtil.normalize(query)
+		if normalizedQuery == "" then
+			return {}
+		end
+		local tokens = searchUtil.words(normalizedQuery)
+		if not searchUtil.index then
+			searchUtil.index = searchUtil.buildIndex()
+		end
+		local scored = {}
+		local seen = {}
+		for _, entry in ipairs(searchUtil.index) do
+			if entry.target.Parent then
+				local key = string.lower(entry.text)
+				local score = searchUtil.score(entry, normalizedQuery, tokens)
+				if score > 20 then
+					local existing = seen[key]
+					if not existing then
+						local record = { target = entry.target, text = entry.text, score = score }
+						seen[key] = record
+						table.insert(scored, record)
+					elseif score > existing.score then
+						existing.target = entry.target
+						existing.score = score
+					end
+				end
+			end
+		end
+		table.sort(scored, function(a, b)
+			if a.score ~= b.score then
+				return a.score > b.score
+			end
+			return #a.text < #b.text
+		end)
+		local results = {}
+		for index = 1, math.min(#scored, maxResults) do
+			results[index] = scored[index]
+		end
+		return results
+	end
+
+	local function buildResultRows()
+		clearResultRows()
+		if #currentResults == 0 then
+			-- Empty-state row so a search that matches nothing still answers.
+			local emptyRow = F.create("TextButton", resultsPanel, {
+				Name = "SearchEmpty",
+				LayoutOrder = 1,
+				Size = UDim2.new(1, 0, 0, SEARCH_RESULT_HEIGHT),
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+				Selectable = false,
+				ZIndex = 26,
+			})
+			local emptyLabel = F.makeText(
+				emptyRow,
+				"No matches",
+				UDim2.new(1, 0, 1, 0),
+				UDim2.fromOffset(0, 0),
+				12,
+				COLORS.Muted,
+				Enum.Font.GothamMedium
+			)
+			emptyLabel.Name = "ResultLabel"
+			emptyLabel.TextXAlignment = Enum.TextXAlignment.Center
+			emptyLabel.TextWrapped = false
+			emptyLabel.ZIndex = 27
+			emptyLabel.Active = false
+			return
+		end
+		for index, entry in ipairs(currentResults) do
+			local row = F.create("TextButton", resultsPanel, {
+				Name = "SearchResult" .. index,
+				LayoutOrder = index,
+				Size = UDim2.new(1, 0, 0, SEARCH_RESULT_HEIGHT),
+				BackgroundColor3 = COLORS.SelectBg,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+				ZIndex = 26,
+			})
+			F.addCorner(row, 5)
+
+			local rowLabel = F.makeText(
+				row,
+				entry.text,
+				UDim2.new(1, -20, 1, 0),
+				UDim2.fromOffset(10, 0),
+				13,
+				COLORS.TabIdle,
+				Enum.Font.GothamMedium
+			)
+			rowLabel.Name = "ResultLabel"
+			rowLabel.TextWrapped = false
+			rowLabel.TextTruncate = Enum.TextTruncate.AtEnd
+			rowLabel.ZIndex = 27
+			rowLabel.Active = false
+
+			row.MouseEnter:Connect(function()
+				F.tween("search_result_bg_" .. index, row, 0.12, {
+					BackgroundTransparency = 0,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+				F.tween("search_result_text_" .. index, rowLabel, 0.12, {
+					TextColor3 = COLORS.Title,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			end)
+			row.MouseLeave:Connect(function()
+				F.tween("search_result_bg_" .. index, row, 0.16, {
+					BackgroundTransparency = 1,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+				F.tween("search_result_text_" .. index, rowLabel, 0.16, {
+					TextColor3 = COLORS.TabIdle,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			end)
+			-- Navigate on press, not release: clicking a result also blurs the
+			-- search box, and waiting for the release can lose the click while the
+			-- dropdown is closing. The guard stops a press+release double jump.
+			local activated = false
+			local function activate()
+				if activated then
+					return
+				end
+				activated = true
+				local target = entry.target
+				closeResults()
+				if F.navigateToSearchResult then
+					F.navigateToSearchResult(target)
+				end
+				-- Clear only after navigating: this rebuilds the row list, which
+				-- would destroy the button while its own input event is running.
+				searchBox.Text = ""
+				searchBox:ReleaseFocus()
+			end
+			row.InputBegan:Connect(function(inputObject)
+				local inputType = inputObject.UserInputType
+				if inputType == Enum.UserInputType.MouseButton1
+					or inputType == Enum.UserInputType.Touch
+				then
+					activate()
+				end
+			end)
+			row.Activated:Connect(activate)
+		end
+	end
+
+	local function refreshResults()
+		if searchBox.Text == "" then
+			currentResults = {}
+			clearResultRows()
+			closeResults()
+			return
+		end
+		currentResults = searchUtil.collect(searchBox.Text, SEARCH_MAX_RESULTS)
+		buildResultRows()
+		openResults()
+	end
+
+	local function setSearchFocused(focused)
+		F.tween("search_input_size", searchBox, 0.18, {
+			Size = focused and FOCUSED_INPUT_SIZE or UNFOCUSED_INPUT_SIZE,
+		}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		F.tween("search_hint_fade", searchHint, 0.16, {
+			TextTransparency = focused and 1 or 0,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	end
+
+	searchBar.MouseEnter:Connect(function()
+		searchHovered = true
+		applySearchVisuals()
+	end)
+	searchBar.MouseLeave:Connect(function()
+		searchHovered = false
+		applySearchVisuals()
+	end)
+	searchBar.Activated:Connect(function()
+		searchBox:CaptureFocus()
+	end)
+
+	searchBox.Focused:Connect(function()
+		searchFocused = true
+		-- Refresh the scan so labels that appeared or changed since the last
+		-- search (conditional rows, dropdown options, game name) match too.
+		searchUtil.index = nil
+		applySearchVisuals()
+		setSearchFocused(true)
+		if searchBox.Text ~= "" then
+			refreshResults()
+		end
+	end)
+
+	searchBox.FocusLost:Connect(function(enterPressed)
+		searchFocused = false
+		applySearchVisuals()
+		setSearchFocused(false)
+		if enterPressed then
+			if #currentResults > 0 then
+				local target = currentResults[1].target
+				closeResults()
+				searchBox.Text = ""
+				if F.navigateToSearchResult then
+					F.navigateToSearchResult(target)
+				end
+			else
+				closeResults()
+			end
+		else
+			task.defer(function()
+				if not searchFocused then
+					closeResults()
+				end
+			end)
+		end
+	end)
+
+	searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+		-- Shift + K focuses the box, but the engine can still deliver that same
+		-- "K" as text input. Swallow exactly that one stray key, once.
+		if shortcutKeyPending then
+			shortcutKeyPending = false
+			local text = searchBox.Text
+			if text == "k" or text == "K" then
+				searchBox.Text = ""
+				return
+			end
+		end
+		refreshResults()
+	end)
+
+	-- Shift + K focuses the search box from anywhere in the interface.
+	SERVICES.UserInputService.InputBegan:Connect(function(inputObject, gameProcessed)
+		if gameProcessed then
+			return
+		end
+		if inputObject.KeyCode ~= Enum.KeyCode.K then
+			return
+		end
+		local userInputService = SERVICES.UserInputService
+		if userInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+			or userInputService:IsKeyDown(Enum.KeyCode.RightShift)
+		then
+			-- Clear first so the pending flag only guards the incoming keystroke.
+			if searchBox.Text ~= "" then
+				searchBox.Text = ""
+			end
+			shortcutKeyPending = true
+			searchBox:CaptureFocus()
+			task.delay(0.15, function()
+				shortcutKeyPending = false
+			end)
+		end
+	end)
+end
+
+local helloGroupBox = F.create("Frame", contentBody, {
 	Name = "HelloGroupBox",
-	Position = UDim2.fromOffset(CONFIG.spacing, 16),
+	Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing),
 	Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 100),
 	BackgroundColor3 = Color3.fromRGB(16, 16, 19),
 	BorderSizePixel = 0,
@@ -352,8 +1352,9 @@ local headerDivider = F.create("Frame", helloGroupBox, {
 	ZIndex = 4,
 })
 
+F.registerCollapsibleGroup(helloGroupBox, helloGroupBox.Size.Y.Offset, helloTitle)
+
 local toggleEnabled = false
-local helloSettingsMode = "Toggle"
 
 local toggleRowY = CONFIG.spacing + 18 + CONFIG.spacing + 1 + CONFIG.spacing
 
@@ -431,6 +1432,96 @@ local toggleKnob = F.create("Frame", toggleTrack, {
 })
 F.addCorner(toggleKnob, 7)
 
+-- Gear glyph built from frames. It starts hidden and acts as a fallback for
+-- the settings icon: if the configured image asset fails to load (as
+-- rbxassetid://7059346386 currently does in Studio), the frames take over so
+-- the button is never rendered completely invisible.
+local function createGearIcon(button)
+	local ring = F.create("Frame", button, {
+		Name = "GearRing",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(12, 12),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 2,
+	})
+	F.create("UICorner", ring, {
+		CornerRadius = UDim.new(0.5, 0),
+	})
+	local ringStroke = F.create("UIStroke", ring, {
+		Name = "GearRingStroke",
+		Color = COLORS.IconSetting,
+		Thickness = 2,
+	})
+	for index = 0, 7 do
+		local angle = index * 45
+		local radians = math.rad(angle)
+		F.create("Frame", button, {
+			Name = "GearTooth",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromOffset(
+				10 + math.cos(radians) * 7,
+				10 + math.sin(radians) * 7
+			),
+			Size = UDim2.fromOffset(4, 2),
+			Rotation = angle,
+			BackgroundColor3 = COLORS.IconSetting,
+			BorderSizePixel = 0,
+			Visible = false,
+			ZIndex = 2,
+		})
+	end
+	return ringStroke
+end
+
+local function setGearColor(button, color)
+	local ring = button:FindFirstChild("GearRing")
+	local stroke = ring and ring:FindFirstChild("GearRingStroke")
+	if stroke then
+		stroke.Color = color
+	end
+	for _, child in ipairs(button:GetChildren()) do
+		if child.Name == "GearTooth" then
+			child.BackgroundColor3 = color
+		end
+	end
+end
+
+-- Shows the configured icon image and checks whether it actually loads.
+-- On success the hidden frame glyph is removed; on failure the image is
+-- cleared and the frame glyph is revealed instead.
+local function applySettingsIcon(button)
+	button.Image = CONFIG.TOGGLE_SETTINGS_ICON
+	button.ImageColor3 = COLORS.IconSetting
+	task.spawn(function()
+		game:GetService("ContentProvider"):PreloadAsync({button}, function(_, status)
+			local ring = button:FindFirstChild("GearRing")
+			if status == Enum.AssetFetchStatus.Success then
+				if ring then
+					ring:Destroy()
+				end
+				for _, child in ipairs(button:GetChildren()) do
+					if child.Name == "GearTooth" then
+						child:Destroy()
+					end
+				end
+			else
+				button.Image = ""
+				if ring then
+					ring.Visible = true
+				end
+				for _, child in ipairs(button:GetChildren()) do
+					if child.Name == "GearTooth" then
+						child.Visible = true
+					end
+				end
+			end
+		end)
+	end)
+end
+
 local settingsButton
 if CONFIG.TOGGLE_SETTINGS_ENABLED then
 	toggleLabel.Size = UDim2.new(1, -66, 1, 0)
@@ -443,31 +1534,33 @@ if CONFIG.TOGGLE_SETTINGS_ENABLED then
 		BackgroundColor3 = COLORS.SelectBg,
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		Image = CONFIG.TOGGLE_SETTINGS_ICON,
-		ImageColor3 = COLORS.Icon,
-		ImageTransparency = 0,
 		AutoButtonColor = false,
 		ZIndex = 8,
 	})
 	F.addCorner(settingsButton, 4)
+	createGearIcon(settingsButton)
+	applySettingsIcon(settingsButton)
 	settingsButton.MouseEnter:Connect(function()
-		F.tween("toggle_settings_hover_" .. toggleRow.Name, settingsButton, 0.13, {
+		-- Key on the button itself: the right toggle's row is a clone with the
+		-- same name, so row-based keys would cancel each other's tweens.
+		F.tween("toggle_settings_hover_" .. settingsButton.Name, settingsButton, 0.13, {
 			BackgroundTransparency = 0.25,
-			ImageColor3 = COLORS.IconHover,
+			ImageColor3 = COLORS.IconSettingHover,
 		})
+		setGearColor(settingsButton, COLORS.IconSettingHover)
 	end)
 	settingsButton.MouseLeave:Connect(function()
-		F.tween("toggle_settings_hover_" .. toggleRow.Name, settingsButton, 0.13, {
+		F.tween("toggle_settings_hover_" .. settingsButton.Name, settingsButton, 0.13, {
 			BackgroundTransparency = 1,
-			ImageColor3 = COLORS.Icon,
+			ImageColor3 = COLORS.IconSetting,
 		})
+		setGearColor(settingsButton, COLORS.IconSetting)
 	end)
 end
 
 function F.setHelloToggle(enabled)
-	if helloSettingsMode == "Always on" then
-		enabled = true
-	end
+	-- "Always on" only forces the toggle on when that mode is selected. The
+	-- setter never overrides the requested value, so manual clicks keep working.
 	toggleEnabled = enabled
 
 	F.tween(
@@ -496,6 +1589,10 @@ function F.setHelloToggle(enabled)
 		Enum.EasingStyle.Quad,
 		Enum.EasingDirection.Out
 	)
+
+	if F.notifyToggleActive then
+		F.notifyToggleActive("Main")
+	end
 end
 
 toggleRow.MouseEnter:Connect(function()
@@ -512,15 +1609,23 @@ end)
 
 local rightGroupBox = helloGroupBox:Clone()
 rightGroupBox.Name = "RightGroupBox"
-rightGroupBox.Position = UDim2.new(0.5, CONFIG.spacing / 2, 0, 16)
+rightGroupBox.Position = UDim2.new(0.5, CONFIG.spacing / 2, 0, CONFIG.spacing)
 rightGroupBox.Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 100)
-rightGroupBox.Parent = content
+rightGroupBox.Parent = contentBody
+
+-- Register after cloning: the clone still contains a copied (inert) arrow,
+-- which registerCollapsibleGroup replaces with a wired one. The cloned title
+-- label is passed so right-aligned titles push the arrow to the left.
+F.registerCollapsibleGroup(
+	rightGroupBox,
+	rightGroupBox.Size.Y.Offset,
+	rightGroupBox:FindFirstChild("TextLabel")
+)
 
 local rightToggleRow = rightGroupBox:WaitForChild("ToggleRow")
 local rightToggleTrack = rightToggleRow:WaitForChild("ToggleTrack")
 local rightToggleKnob = rightToggleTrack:WaitForChild("ToggleKnob")
 local rightToggleEnabled = false
-local rightSettingsMode = "Toggle"
 
 local rightToggleLabel = rightToggleRow:WaitForChild("ToggleLabel")
 rightToggleLabel.Position = UDim2.fromOffset(0, 0)
@@ -535,9 +1640,8 @@ rightToggleRow.MouseLeave:Connect(function()
 end)
 
 function F.setRightToggle(enabled)
-	if rightSettingsMode == "Always on" then
-		enabled = true
-	end
+	-- "Always on" only forces the toggle on when that mode is selected. The
+	-- setter never overrides the requested value, so manual clicks keep working.
 	rightToggleEnabled = enabled
 	F.tween("right_toggle_track", rightToggleTrack, 0.18, {
 		BackgroundColor3 = rightToggleEnabled and COLORS.Accent or Color3.fromRGB(57, 57, 64),
@@ -546,23 +1650,30 @@ function F.setRightToggle(enabled)
 		Position = rightToggleEnabled and UDim2.new(1, -17, 0, 3) or UDim2.fromOffset(3, 3),
 		BackgroundColor3 = rightToggleEnabled and Color3.fromRGB(245, 249, 255) or Color3.fromRGB(190, 190, 198),
 	})
+
+	if F.notifyToggleActive then
+		F.notifyToggleActive("Right")
+	end
 end
 
 local rightSettingsButton = CONFIG.TOGGLE_SETTINGS_ENABLED and rightGroupBox:FindFirstChild("SettingsButton") or nil
 if rightSettingsButton then
 	rightSettingsButton.Name = "RightToggleSettingsButton"
 	rightSettingsButton.MouseEnter:Connect(function()
-		F.tween("toggle_settings_hover_" .. rightToggleRow.Name, rightSettingsButton, 0.13, {
+		F.tween("toggle_settings_hover_" .. rightSettingsButton.Name, rightSettingsButton, 0.13, {
 			BackgroundTransparency = 0.25,
-			ImageColor3 = COLORS.IconHover,
+			ImageColor3 = COLORS.IconSettingHover,
 		})
+		setGearColor(rightSettingsButton, COLORS.IconSettingHover)
 	end)
 	rightSettingsButton.MouseLeave:Connect(function()
-		F.tween("toggle_settings_hover_" .. rightToggleRow.Name, rightSettingsButton, 0.13, {
+		F.tween("toggle_settings_hover_" .. rightSettingsButton.Name, rightSettingsButton, 0.13, {
 			BackgroundTransparency = 1,
-			ImageColor3 = COLORS.Icon,
+			ImageColor3 = COLORS.IconSetting,
 		})
+		setGearColor(rightSettingsButton, COLORS.IconSetting)
 	end)
+	applySettingsIcon(rightSettingsButton)
 end
 
 rightToggleRow.Activated:Connect(function()
@@ -572,7 +1683,7 @@ end)
 local toggleSettingsPopup = F.create("CanvasGroup", ScreenGui, {
 	Name = "ToggleSettingsPopup",
 	Position = UDim2.fromOffset(0, 0),
-	Size = UDim2.fromOffset(224, CONFIG.spacing * 2 + 3 + 26 + CONFIG.spacing * 2 + 28 + CONFIG.spacing * 2),
+	Size = UDim2.fromOffset(224, CONFIG.spacing + 26 + CONFIG.spacing + 28 + CONFIG.spacing),
 	BackgroundColor3 = Color3.fromRGB(21, 21, 25),
 	BackgroundTransparency = 0,
 	GroupTransparency = 1,
@@ -584,13 +1695,13 @@ local toggleSettingsPopup = F.create("CanvasGroup", ScreenGui, {
 F.addCorner(toggleSettingsPopup, 6)
 F.addStroke(toggleSettingsPopup)
 
-local settingsMenuPaddingX = CONFIG.spacing * 2
-local settingsMenuPaddingY = CONFIG.spacing + 3
+local settingsMenuPaddingX = CONFIG.spacing
+local settingsMenuPaddingY = CONFIG.spacing
 local settingsMenuLabelWidth = 44
 local settingsMenuFieldX = settingsMenuPaddingX + settingsMenuLabelWidth + CONFIG.spacing
-local settingsMenuFieldRightPadding = CONFIG.spacing * 2
+local settingsMenuFieldRightPadding = CONFIG.spacing
 local settingsMenuFieldWidth = UDim2.new(1, -(settingsMenuFieldX + settingsMenuFieldRightPadding), 0, 26)
-local settingsMenuTypeY = settingsMenuPaddingY + 26 + CONFIG.spacing * 2
+local settingsMenuTypeY = settingsMenuPaddingY + 26 + CONFIG.spacing
 
 local keyTitle = F.makeText(toggleSettingsPopup, "Key", UDim2.fromOffset(settingsMenuLabelWidth, 26), UDim2.fromOffset(settingsMenuPaddingX, settingsMenuPaddingY), 12, COLORS.TabIdle, Enum.Font.GothamMedium)
 keyTitle.ZIndex = 6002
@@ -720,10 +1831,11 @@ local typeOptionsTargetWidth = 0
 local typeOptionsTargetHeight = 0
 
 function F.refreshTypeOptionColors()
+	local selectedMode = activeToggleSettings and activeToggleSettings.mode
 	for mode, elements in pairs(typeOptionButtons) do
 		if elements.label and elements.label.Parent then
 			F.tween("toggle_type_option_color_" .. mode, elements.label, 0.12, {
-				TextColor3 = mode == (activeToggleSettings and activeToggleSettings.mode or "Toggle") and COLORS.Accent or COLORS.TabIdle,
+				TextColor3 = selectedMode == mode and COLORS.Accent or COLORS.TabIdle,
 			})
 		end
 	end
@@ -736,11 +1848,167 @@ end
 
 typeOptionsAnimHeight.Changed:Connect(F.applyTypeOptionsPopupLayout)
 
-local typeConfigs = {
-	Main = {button = settingsButton, mode = "Toggle", keyCode = nil, mouseButton = nil, setValue = F.setHelloToggle},
-	Right = {button = rightSettingsButton, mode = "Toggle", keyCode = nil, mouseButton = nil, setValue = F.setRightToggle},
-}
+-- ============================================================================
+-- Toggle settings registry.
+-- Any toggle that has a settings button registers here. "Hold on" drives
+-- `config.held` (a signal for the code behind the toggle) instead of flipping
+-- the visible switch. Manual clicking always works, including in "Always on".
+--
+-- To add a future toggle with settings:
+--   F.registerToggleSettings("FeatureName", {
+--       button = settingsButtonForFeature,
+--       setValue = function(enabled) ... end,
+--       getValue = function() return featureEnabled end,
+--       onHeld = function(held) ... end,   -- optional
+--       onActive = function(active) ... end, -- optional
+--   })
+-- Then read the combined run state with F.isToggleActive("FeatureName"), or
+-- listen for every type/key change with F.onToggleActive("FeatureName", cb).
+-- `active` is true when the manual switch is on OR the keybind is held.
+-- ============================================================================
+local typeConfigs = {}
+
+function F.registerToggleSettings(name, options)
+	local rawSetValue = options.setValue
+	local config = {
+		name = name,
+		button = options.button,
+		mode = options.mode or "Toggle",
+		keyCode = options.keyCode,
+		mouseButton = options.mouseButton,
+		displayName = options.displayName,
+		setValue = function(enabled)
+			if rawSetValue then
+				rawSetValue(enabled)
+			end
+			F.notifyToggleActive(config)
+		end,
+		getValue = options.getValue or function()
+			return false
+		end,
+		onHeld = options.onHeld,
+		onActive = options.onActive,
+		held = false,
+		heldListeners = {},
+		activeListeners = {},
+		lastActive = false,
+	}
+	-- Start from the toggle's current value so the first change always fires.
+	config.lastActive = config.held == true or config.getValue() == true
+	typeConfigs[name] = config
+	return config
+end
+
+function F.getToggleSettings(name)
+	return typeConfigs[name]
+end
+
+function F.isToggleEnabled(name)
+	local config = typeConfigs[name]
+	return config ~= nil and config.getValue() == true
+end
+
+function F.isToggleHeld(name)
+	local config = typeConfigs[name]
+	return config ~= nil and config.held == true
+end
+
+-- Combined state for code behind a toggle: the manual switch OR a held key.
+function F.isToggleActive(name)
+	local config = typeConfigs[name]
+	if not config then
+		return false
+	end
+	return config.held == true or config.getValue() == true
+end
+
+-- Fires `callback(active)` whenever the combined state changes. `active` is
+-- true when the manual switch is on OR the keybind is currently held.
+-- Returns a disconnect function.
+function F.onToggleActive(name, callback)
+	local config = typeConfigs[name]
+	if not config or type(callback) ~= "function" then
+		return nil
+	end
+	table.insert(config.activeListeners, callback)
+	return function()
+		local index = table.find(config.activeListeners, callback)
+		if index then
+			table.remove(config.activeListeners, index)
+		end
+	end
+end
+
+function F.notifyToggleActive(configOrName)
+	local config = typeConfigs[configOrName] or configOrName
+	if not config or not config.activeListeners then
+		return
+	end
+	local active = config.held == true or config.getValue() == true
+	if config.lastActive == active then
+		return
+	end
+	config.lastActive = active
+	if config.onActive then
+		task.spawn(config.onActive, active)
+	end
+	for _, callback in ipairs(config.activeListeners) do
+		task.spawn(callback, active)
+	end
+end
+
+-- Fires `callback(held)` when the keybind starts/stops being held.
+-- Returns a disconnect function.
+function F.onToggleHeld(name, callback)
+	local config = typeConfigs[name]
+	if not config or type(callback) ~= "function" then
+		return nil
+	end
+	table.insert(config.heldListeners, callback)
+	return function()
+		local index = table.find(config.heldListeners, callback)
+		if index then
+			table.remove(config.heldListeners, index)
+		end
+	end
+end
+
+function F.setToggleHeld(configOrName, held)
+	local config = typeConfigs[configOrName] or configOrName
+	if not config or not config.heldListeners then
+		return
+	end
+	held = held == true
+	if config.held == held then
+		return
+	end
+	config.held = held
+	if config.onHeld then
+		task.spawn(config.onHeld, held)
+	end
+	for _, callback in ipairs(config.heldListeners) do
+		task.spawn(callback, held)
+	end
+	F.notifyToggleActive(config)
+end
+
 local keybindCaptureActive = false
+
+typeConfigs.Main = F.registerToggleSettings("Main", {
+	button = settingsButton,
+	setValue = F.setHelloToggle,
+	getValue = function()
+		return toggleEnabled
+	end,
+})
+
+typeConfigs.Right = F.registerToggleSettings("Right", {
+	button = rightSettingsButton,
+	setValue = F.setRightToggle,
+	getValue = function()
+		return rightToggleEnabled
+	end,
+})
 
 function F.getSettingsViewport()
 	local size = ScreenGui.AbsoluteSize
@@ -752,20 +2020,29 @@ function F.getSettingsViewport()
 end
 
 function F.positionSettingsPopup(button)
+	if not button then
+		return
+	end
 	local screenOrigin = ScreenGui.AbsolutePosition
 	local viewportSize = F.getSettingsViewport()
 	local buttonPosition = button.AbsolutePosition
 	local buttonSize = button.AbsoluteSize
 	local edgeSpacing = CONFIG.spacing * 2
-	local preferredRightX = buttonPosition.X - screenOrigin.X + buttonSize.X + CONFIG.spacing
-	local x = math.max(edgeSpacing, preferredRightX)
-	local availableRightWidth = math.max(1, viewportSize.X - x - edgeSpacing)
-	local popupWidth = math.min(224, availableRightWidth)
+	local availableWidth = math.max(1, viewportSize.X - edgeSpacing * 2)
+	local popupWidth = math.min(224, availableWidth)
 	toggleSettingsPopup.Size = UDim2.fromOffset(popupWidth, toggleSettingsPopup.Size.Y.Offset)
 	keybindButton.Size = UDim2.new(1, -(settingsMenuFieldX + settingsMenuFieldRightPadding), 0, 26)
 	typeButton.Size = UDim2.new(1, -(settingsMenuFieldX + settingsMenuFieldRightPadding), 0, 28)
-	local popupHeight = toggleSettingsPopup.AbsoluteSize.Y
-	local y = buttonPosition.Y - screenOrigin.Y + buttonSize.Y + CONFIG.spacing
+	local popupHeight = toggleSettingsPopup.Size.Y.Offset
+	-- Dropdown directly underneath the gear button, left-aligned with it.
+	-- The button itself never moves; only the popup is placed.
+	local x = buttonPosition.X - screenOrigin.X
+	x = math.clamp(x, edgeSpacing, math.max(edgeSpacing, viewportSize.X - popupWidth - edgeSpacing))
+	local y = buttonPosition.Y + buttonSize.Y + CONFIG.spacing - screenOrigin.Y
+	-- Flip above the button when there is not enough room below it.
+	if y + popupHeight > viewportSize.Y - edgeSpacing then
+		y = buttonPosition.Y - popupHeight - CONFIG.spacing - screenOrigin.Y
+	end
 	y = math.clamp(y, edgeSpacing, math.max(edgeSpacing, viewportSize.Y - popupHeight - edgeSpacing))
 	toggleSettingsPopup.Position = UDim2.fromOffset(x, y)
 end
@@ -861,7 +2138,7 @@ function F.setToggleSettingsOpen(open, config)
 	if open then
 		activeToggleSettings = config
 		keybindButton.Text = config.displayName or "Press a key"
-		typeButtonText.Text = config.mode
+		typeButtonText.Text = config.mode or "--"
 		F.refreshTypeOptionColors()
 		F.positionSettingsPopup(config.button)
 		F.setTypeDropdownOpen(false)
@@ -902,7 +2179,7 @@ end
 
 window:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
 	if activeToggleSettings and toggleSettingsPopup.Visible then
-		F.positionSettingsPopup(activeToggleSettings.button)
+		task.defer(F.positionSettingsPopup, activeToggleSettings.button)
 		if typeOptionsOpen then
 			F.positionTypeOptions()
 		end
@@ -911,7 +2188,7 @@ end)
 
 window:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
 	if activeToggleSettings and toggleSettingsPopup.Visible then
-		F.positionSettingsPopup(activeToggleSettings.button)
+		task.defer(F.positionSettingsPopup, activeToggleSettings.button)
 		if typeOptionsOpen then
 			F.positionTypeOptions()
 		end
@@ -1016,18 +2293,23 @@ keybindButton.MouseLeave:Connect(function()
 end)
 
 function F.applySettingsType(config, mode)
-	config.mode = mode
-	if config == typeConfigs.Main then
-		helloSettingsMode = mode
-	elseif config == typeConfigs.Right then
-		rightSettingsMode = mode
+	-- Clicking the currently selected type clears it (shows "--").
+	if config.mode == mode then
+		mode = nil
 	end
-	typeButtonText.Text = mode
+	config.mode = mode
+	typeButtonText.Text = mode or "--"
 	F.refreshTypeOptionColors()
+
+	-- Leaving "Hold on" always releases the held signal. The visible switch
+	-- is never touched here: hold is a separate input state from the toggle.
+	if mode ~= "Hold on" then
+		F.setToggleHeld(config, false)
+	end
 	if mode == "Always on" then
+		-- Only force it on at the moment the mode is picked. Afterwards the
+		-- user can still click the toggle off manually.
 		config.setValue(true)
-	elseif mode == "Hold on" then
-		config.setValue(false)
 	end
 end
 
@@ -1140,13 +2422,11 @@ SERVICES.UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	for _, config in pairs(typeConfigs) do
 		if F.inputMatchesConfig(input, config) then
 			if config.mode == "Toggle" then
-				if config == typeConfigs.Main then
-					config.setValue(not toggleEnabled)
-				elseif config == typeConfigs.Right then
-					config.setValue(not rightToggleEnabled)
-				end
+				config.setValue(not config.getValue())
 			elseif config.mode == "Hold on" then
-				config.setValue(true)
+				-- Drive the feature behind the toggle only; do not flip the
+				-- visible switch on every key press.
+				F.setToggleHeld(config, true)
 			elseif config.mode == "Always on" then
 				config.setValue(true)
 			end
@@ -1157,8 +2437,16 @@ end)
 SERVICES.UserInputService.InputEnded:Connect(function(input)
 	for _, config in pairs(typeConfigs) do
 		if config.mode == "Hold on" and F.inputMatchesConfig(input, config) then
-			config.setValue(false)
+			F.setToggleHeld(config, false)
 		end
+	end
+end)
+
+-- Release every held input when the window loses focus, so a key-up that
+-- happens outside the game cannot leave a feature stuck in the held state.
+SERVICES.UserInputService.WindowFocusReleased:Connect(function()
+	for _, config in pairs(typeConfigs) do
+		F.setToggleHeld(config, false)
 	end
 end)
 
@@ -1699,8 +2987,14 @@ for index, optionName in ipairs(CONFIG.DROPDOWN_OPTIONS) do
 	end)
 
 	optionButton.Activated:Connect(function()
-		dropdownSelected = optionName
-		dropdownButtonText.Text = optionName
+		-- Clicking the selected option again clears the selection.
+		if dropdownSelected == optionName then
+			dropdownSelected = nil
+			dropdownButtonText.Text = "--"
+		else
+			dropdownSelected = optionName
+			dropdownButtonText.Text = optionName
+		end
 		F.refreshDropdownOptionColors()
 		F.setDropdownOpen(false)
 	end)
@@ -1764,9 +3058,9 @@ local colorDragInputType = nil
 local colorDragTouchInput = nil
 local colorFormat = "HEX"
 
-local secondGroupBox = F.create("Frame", content, {
+local secondGroupBox = F.create("Frame", contentBody, {
 	Name = "SecondHelloGroupBox",
-	Position = UDim2.fromOffset(CONFIG.spacing, 16),
+	Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing),
 	Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 80),
 	BackgroundColor3 = Color3.fromRGB(16, 16, 19),
 	BorderSizePixel = 0,
@@ -1803,6 +3097,13 @@ secondGroupDivider.Name = "HeaderDivider"
 secondGroupDivider.Position = UDim2.fromOffset(CONFIG.spacing, secondGroupDividerY)
 secondGroupDivider.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1)
 secondGroupDivider.Parent = secondGroupBox
+
+F.registerCollapsibleGroup(secondGroupBox, secondGroupBox.Size.Y.Offset, secondGroupTitle)
+
+-- This group box sits directly under `hello!`, so it slides up/down with it.
+F.addGroupBoxFollower(helloGroupBox, secondGroupBox, function(height)
+	return UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + height + CONFIG.spacing)
+end)
 
 local secondToggleRowY = secondGroupDividerY + 1 + CONFIG.spacing
 local colorToggleRow = F.create("TextButton", secondGroupBox, {
@@ -1952,8 +3253,13 @@ function F.secondGroupTargetHeight()
 end
 
 function F.refreshSecondGroupSize()
+	local expandedHeight = F.secondGroupTargetHeight()
+	F.setGroupBoxExpandedHeight(secondGroupBox, expandedHeight)
+	if F.isGroupBoxCollapsed(secondGroupBox) then
+		return
+	end
 	F.tween("second_group_size", secondGroupBox, 0.24, {
-		Size = UDim2.fromOffset(secondGroupBox.AbsoluteSize.X, F.secondGroupTargetHeight()),
+		Size = UDim2.fromOffset(secondGroupBox.AbsoluteSize.X, expandedHeight),
 	}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 end
 
@@ -2925,21 +4231,24 @@ function F.updateGroupBoxLayout()
 	local sliderInputWidth = 46
 	local sliderControlWidthOffset = sliderLeft + sliderRightGap * 2 + sliderInputWidth
 
-	helloGroupBox.Position = UDim2.fromOffset(CONFIG.spacing, 16)
-	helloGroupBox.Size = UDim2.fromOffset(groupWidth, leftHeight)
+	helloGroupBox.Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing)
+	F.setGroupBoxExpandedHeight(helloGroupBox, leftHeight)
+	local helloHeight = F.getGroupBoxHeight(helloGroupBox, leftHeight)
+	helloGroupBox.Size = UDim2.fromOffset(groupWidth, helloHeight)
 
-	secondGroupBox.Position = UDim2.fromOffset(CONFIG.spacing, 16 + leftHeight + CONFIG.spacing)
+	local secondExpandedHeight = F.secondGroupTargetHeight()
+	F.setGroupBoxExpandedHeight(secondGroupBox, secondExpandedHeight)
+	secondGroupBox.Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + helloHeight + CONFIG.spacing)
 	secondGroupBox.Size = UDim2.fromOffset(
 		groupWidth,
-		F.secondGroupTargetHeight()
+		F.getGroupBoxHeight(secondGroupBox, secondExpandedHeight)
 	)
 
 	conditionalRow.Position = UDim2.fromOffset(CONFIG.spacing, conditionalRowY)
 	conditionalRow.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 30)
 	hiddenRow.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 30)
 
-	secondGroupTitle.Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing)
-	secondGroupTitle.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 18)
+	F.layoutGroupBoxTitle(secondGroupTitle)
 	secondGroupDivider.Position = UDim2.fromOffset(CONFIG.spacing, secondGroupDividerY)
 	secondGroupDivider.Size = headerDivider.Size
 	secondGroupDivider.BackgroundColor3 = headerDivider.BackgroundColor3
@@ -2954,17 +4263,26 @@ function F.updateGroupBoxLayout()
 	local occupiedWidth = 36 + CONFIG.spacing + colorPickerCount * 14 + colorPickerCount * CONFIG.spacing + CONFIG.spacing
 	colorToggleLabel.Size = UDim2.new(1, -occupiedWidth, 1, 0)
 
-	rightGroupBox.Position = UDim2.fromOffset(CONFIG.spacing * 2 + groupWidth, 16)
-	rightGroupBox.Size = UDim2.fromOffset(groupWidth, rightHeight)
+	rightGroupBox.Position = UDim2.fromOffset(CONFIG.spacing * 2 + groupWidth, CONFIG.spacing)
+	F.setGroupBoxExpandedHeight(rightGroupBox, rightHeight)
+	rightGroupBox.Size = UDim2.fromOffset(
+		groupWidth,
+		F.getGroupBoxHeight(rightGroupBox, rightHeight)
+	)
 
-	helloTitle.Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing)
-	helloTitle.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 18)
+	F.layoutGroupBoxTitle(helloTitle)
 	headerDivider.Position = UDim2.fromOffset(CONFIG.spacing, dividerY)
 	headerDivider.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1)
 
-	local function layoutToggleWithSettings(groupBox, row, track, label, button)
-		local innerWidth = math.max(0, groupBox.AbsoluteSize.X - CONFIG.spacing * 2)
-		local settingsWidth = button and (button.AbsoluteSize.X + CONFIG.spacing) or 0
+	local function layoutToggleWithSettings(row, track, label, button)
+		-- Measure from values that are valid on the very first frame: the
+		-- gear's declared Size is available immediately, while AbsoluteSize
+		-- reads 0 before the first render pass — which pushed the gear
+		-- outside the clipped group box on spawn, hiding it until the next
+		-- layout re-run.
+		local gearWidth = button and button.Size.X.Offset or 0
+		local innerWidth = math.max(0, groupWidth - CONFIG.spacing * 2)
+		local settingsWidth = button and (gearWidth + CONFIG.spacing) or 0
 		local rowWidth = math.max(0, innerWidth - settingsWidth)
 		row.Position = UDim2.fromOffset(CONFIG.spacing, componentY)
 		row.Size = UDim2.fromOffset(rowWidth, 30)
@@ -2972,13 +4290,23 @@ function F.updateGroupBoxLayout()
 		label.Size = UDim2.new(1, -66, 1, 0)
 		track.Position = UDim2.new(1, -(36 + CONFIG.spacing), 0.5, -10)
 		if button then
-			button.AnchorPoint = Vector2.new(0, 0.5)
-			button.Position = UDim2.fromOffset(CONFIG.spacing + rowWidth + CONFIG.spacing, componentY + 15)
+			-- Pin the gear to the group box's right edge so a stale width
+			-- can never push it outside the clipped box again.
+			local rowPosition = UDim2.new(1, -CONFIG.spacing, 0, componentY + 15)
+			if button.Parent == toggleSettingsPopup and settingsDockInfo and settingsDockInfo.button == button then
+				-- Gear is docked inside the settings popup; keep its home slot
+			-- fresh so undocking restores the correct row position.
+				settingsDockInfo.position = rowPosition
+				settingsDockInfo.anchorPoint = Vector2.new(1, 0.5)
+			else
+				button.AnchorPoint = Vector2.new(1, 0.5)
+				button.Position = rowPosition
+			end
 		end
 	end
 
-	layoutToggleWithSettings(helloGroupBox, toggleRow, toggleTrack, toggleLabel, settingsButton)
-	layoutToggleWithSettings(rightGroupBox, rightToggleRow, rightToggleTrack, rightToggleLabel, rightSettingsButton)
+	layoutToggleWithSettings(toggleRow, toggleTrack, toggleLabel, settingsButton)
+	layoutToggleWithSettings(rightToggleRow, rightToggleTrack, rightToggleLabel, rightSettingsButton)
 
 	dropdownTitle.Position = UDim2.fromOffset(CONFIG.spacing, nextComponentY)
 	dropdownTitle.Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, titleHeight)
@@ -3221,9 +4549,26 @@ F.create("Frame", profileInfo, {
 	ZIndex = 5,
 })
 
+-- Formats the local wall clock as a 12-hour time (hh:mm:ss AM/PM), built
+-- manually from os.date("*t") so the label never depends on locale output.
+function F.formatClockTime()
+	local t = os.date("*t")
+	local hour = t.hour % 12
+	if hour == 0 then
+		hour = 12
+	end
+	return string.format(
+		"%02d:%02d:%02d %s",
+		hour,
+		t.min,
+		t.sec,
+		t.hour < 12 and "AM" or "PM"
+	)
+end
+
 local clockLabel = F.makeText(
 	profileInfo,
-	os.date("%H:%M:%S"),
+	F.formatClockTime(),
 	UDim2.new(0, 0, 1, 0),
 	UDim2.fromOffset(0, 0),
 	12,
@@ -3235,11 +4580,11 @@ clockLabel.AutomaticSize = Enum.AutomaticSize.X
 clockLabel.LayoutOrder = 3
 clockLabel.ZIndex = 5
 
--- Live local time (hour:minute:second), refreshed as the wall clock ticks.
+-- Live local time (12-hour), refreshed as the wall clock ticks.
 task.spawn(function()
 	local last = ""
 	while true do
-		local now = os.date("%H:%M:%S")
+		local now = F.formatClockTime()
 		if now ~= last then
 			last = now
 			clockLabel.Text = now
@@ -3362,7 +4707,7 @@ local arrowHolder = F.create("Frame", dragHandle, {
 
 local arrowParts = {}
 
-function F.addArrowLine(x1, y1, x2, y2, name)
+function F.addArrowLine(x1, y1, x2, y2, name, thickness)
 	local dx = x2 - x1
 	local dy = y2 - y1
 	local length = math.sqrt(dx * dx + dy * dy)
@@ -3370,7 +4715,7 @@ function F.addArrowLine(x1, y1, x2, y2, name)
 		Name = name,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromOffset((x1 + x2) * 0.5, (y1 + y2) * 0.5),
-		Size = UDim2.fromOffset(length, 1.5),
+		Size = UDim2.fromOffset(length, thickness or 1.5),
 		Rotation = math.deg(math.atan2(dy, dx)),
 		BackgroundColor3 = COLORS.Icon,
 		BorderSizePixel = 0,
@@ -3380,16 +4725,18 @@ function F.addArrowLine(x1, y1, x2, y2, name)
 	return line
 end
 
-F.addArrowLine(10, 10, 10, 4, "ArrowUpShaft")
+-- Shafts are drawn slightly thicker than the angled heads so their rendered
+-- weight matches (rotated 1.5px lines read thinner than straight ones).
+F.addArrowLine(10, 10, 10, 4, "ArrowUpShaft", 2)
 F.addArrowLine(10, 2, 7, 5, "ArrowUpHeadLeft")
 F.addArrowLine(10, 2, 13, 5, "ArrowUpHeadRight")
-F.addArrowLine(10, 10, 10, 16, "ArrowDownShaft")
+F.addArrowLine(10, 10, 10, 16, "ArrowDownShaft", 2)
 F.addArrowLine(10, 18, 7, 15, "ArrowDownHeadLeft")
 F.addArrowLine(10, 18, 13, 15, "ArrowDownHeadRight")
-F.addArrowLine(10, 10, 4, 10, "ArrowLeftShaft")
+F.addArrowLine(10, 10, 4, 10, "ArrowLeftShaft", 2)
 F.addArrowLine(2, 10, 5, 7, "ArrowLeftHeadTop")
 F.addArrowLine(2, 10, 5, 13, "ArrowLeftHeadBottom")
-F.addArrowLine(10, 10, 16, 10, "ArrowRightShaft")
+F.addArrowLine(10, 10, 16, 10, "ArrowRightShaft", 2)
 F.addArrowLine(18, 10, 15, 7, "ArrowRightHeadTop")
 F.addArrowLine(18, 10, 15, 13, "ArrowRightHeadBottom")
 
@@ -3612,16 +4959,18 @@ function F.endDrag()
 		local finalPosition = F.clampToScreen(drag.goal, drag.target.AbsoluteSize)
 		drag.target.Position = UDim2.fromOffset(finalPosition.X, finalPosition.Y)
 
-		if drag.target == window then
+		if drag.target == F.activeWindowContainer() then
 			state.fullPos = finalPosition
 		elseif drag.target == miniBar then
 			state.miniPos = finalPosition
 		end
 	elseif drag.mode == "resize" then
 		local finalSize = drag.goalSize
-		window.Size = UDim2.fromOffset(finalSize.X, finalSize.Y)
+		local container = F.activeWindowContainer()
+		container.Size = UDim2.fromOffset(finalSize.X, finalSize.Y)
+		F.updateWindowContainer(finalSize)
 		state.fullSize = finalSize
-		state.fullPos = F.getOffsetPosition(window)
+		state.fullPos = F.getOffsetPosition(F.activeWindowContainer())
 	end
 
 	local previousMode = drag.mode
@@ -3665,17 +5014,11 @@ function F.updateDragFromPointer(pointer)
 			drag.target.AbsoluteSize
 		)
 	elseif drag.mode == "resize" then
-		local currentCamera = workspace.CurrentCamera
-		local windowPosition = F.getOffsetPosition(window)
-		local availableWidth = currentCamera and currentCamera.ViewportSize.X - windowPosition.X or CONFIG.MAX_SIZE.X
-		local availableHeight = currentCamera and currentCamera.ViewportSize.Y - windowPosition.Y or CONFIG.MAX_SIZE.Y
-
-		local maxWidth = math.max(CONFIG.MIN_SIZE.X, math.min(CONFIG.MAX_SIZE.X, availableWidth))
-		local maxHeight = math.max(CONFIG.MIN_SIZE.Y, math.min(CONFIG.MAX_SIZE.Y, availableHeight))
-
+		-- Only the minimum size is enforced; the maximum is CONFIG.MAX_SIZE,
+		-- independent of how much of the window sits off-screen.
 		drag.goalSize = Vector2.new(
-			math.clamp(drag.originGoalSize.X + delta.X, CONFIG.MIN_SIZE.X, maxWidth),
-			math.clamp(drag.originGoalSize.Y + delta.Y, CONFIG.MIN_SIZE.Y, maxHeight)
+			math.clamp(drag.originGoalSize.X + delta.X, CONFIG.MIN_SIZE.X, CONFIG.MAX_SIZE.X),
+			math.clamp(drag.originGoalSize.Y + delta.Y, CONFIG.MIN_SIZE.Y, CONFIG.MAX_SIZE.Y)
 		)
 	end
 end
@@ -3735,15 +5078,23 @@ SERVICES.UserInputService.InputBegan:Connect(function(input)
 		return
 	end
 
+	-- Fullscreen pins the window in place; only its buttons remain active.
+	if state.fullscreen then
+		return
+	end
+
 	if rightGroupBox.Visible and F.pointInside(sliderHitArea, point) then
 		F.beginSliderDrag(input)
 		return
 	end
 
 	if F.pointInside(resizeGrip, point) then
-		F.beginDrag("resize", window, input)
-	elseif F.pointInside(dragRegion, point) and not F.pointInside(minimizeBtn, point) then
-		F.beginDrag("move", window, input)
+		F.beginDrag("resize", F.activeWindowContainer(), input)
+	elseif F.pointInside(dragRegion, point)
+		and not F.pointInside(minimizeBtn, point)
+		and not (F.fullscreenButton and F.pointInside(F.fullscreenButton, point))
+	then
+		F.beginDrag("move", F.activeWindowContainer(), input)
 	end
 end)
 
@@ -3790,17 +5141,23 @@ SERVICES.RunService.RenderStepped:Connect(function(deltaTime)
 			math.floor(drag.current.Y + 0.5)
 		)
 
-		if drag.target == window then
+		if drag.target == F.activeWindowContainer() then
 			state.fullPos = drag.current
 		elseif drag.target == miniBar then
 			state.miniPos = drag.current
 		end
 	elseif drag.mode == "resize" then
 		drag.currentSize = drag.currentSize:Lerp(drag.goalSize, alpha)
-		window.Size = UDim2.fromOffset(
+		local container = F.activeWindowContainer()
+		local newSize = Vector2.new(
 			math.floor(drag.currentSize.X + 0.5),
 			math.floor(drag.currentSize.Y + 0.5)
 		)
+		container.Size = UDim2.fromOffset(newSize.X, newSize.Y)
+		-- Swap into the plain-Frame shell when the size exceeds the
+		-- CanvasGroup texture cap (and back when it shrinks), so the window
+		-- never renders blurry at large sizes.
+		F.updateWindowContainer(newSize)
 	end
 end)
 
@@ -3809,14 +5166,26 @@ function F.minimizeWindow()
 		return
 	end
 
+	-- Leaving fullscreen first (instantly) keeps the mini-bar flow working on
+	-- the real window and hands the children back before the fade starts.
+	if state.fullscreen then
+		F.setWindowFullscreen(false, false)
+	end
+
+	-- If the window was in large (shell) mode, bring the children back into
+	-- the window first so its CanvasGroup fade still works; the short fade
+	-- hides the texture-cap softness the CanvasGroup has at large sizes.
+	F.restoreWindowContainer()
+
 	state.animating = true
 	F.endDrag()
 	F.setDropdownOpen(false)
 	F.closeColorPicker()
 	F.setToggleSettingsOpen(false)
 
-	state.fullPos = F.getOffsetPosition(window)
-	state.fullSize = Vector2.new(window.Size.X.Offset, window.Size.Y.Offset)
+	local windowContainer = F.activeWindowContainer()
+	state.fullPos = F.getOffsetPosition(windowContainer)
+	state.fullSize = Vector2.new(windowContainer.Size.X.Offset, windowContainer.Size.Y.Offset)
 
 	if not state.miniPos then
 		state.miniPos = Vector2.new(
@@ -3897,10 +5266,473 @@ function F.expandWindow()
 	miniBar.GroupTransparency = 1
 	state.minimized = false
 	state.animating = false
+
+	-- A large expanded window keeps rendering through the plain-Frame shell.
+	F.updateWindowContainer()
 end
 
 minimizeBtn.MouseButton1Click:Connect(F.minimizeWindow)
 expandBtn.MouseButton1Click:Connect(F.expandWindow)
+
+-- Title-bar fullscreen toggle. Sits between the game name and the minimize
+-- button. Fullscreen fills the usable screen area (starting below the Roblox
+-- topbar so the menu button stays reachable) and is drawn above other
+-- PlayerGui layers such as a custom chat, then restores the exact geometry
+-- that was in use before it was clicked.
+do
+	local fullscreenButton = F.create("TextButton", titleBar, {
+		Name = "FullscreenButton",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -38, 0.5, 0),
+		Size = UDim2.fromOffset(22, 22),
+		BackgroundColor3 = COLORS.SelectBg,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 8,
+	})
+	F.addCorner(fullscreenButton, 6)
+	-- Exposed so the window drag handler can ignore presses on the button.
+	F.fullscreenButton = fullscreenButton
+
+	local maximizeIcon = F.create("CanvasGroup", fullscreenButton, {
+		Name = "MaximizeIcon",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		GroupTransparency = 0,
+		ZIndex = 9,
+	})
+	local restoreIcon = F.create("CanvasGroup", fullscreenButton, {
+		Name = "RestoreIcon",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+		Visible = false,
+		ZIndex = 9,
+	})
+
+	local iconParts = {}
+
+	local function addBar(parent, x, y, width, height)
+		local bar = F.create("Frame", parent, {
+			Position = UDim2.fromOffset(x, y),
+			Size = UDim2.fromOffset(width, height),
+			BackgroundColor3 = COLORS.Icon,
+			BorderSizePixel = 0,
+			ZIndex = 10,
+		})
+		table.insert(iconParts, bar)
+	end
+
+	-- Fullscreen icon: four corner brackets forming an open square.
+	addBar(maximizeIcon, 5, 5, 4, 2)
+	addBar(maximizeIcon, 5, 5, 2, 4)
+	addBar(maximizeIcon, 13, 5, 4, 2)
+	addBar(maximizeIcon, 15, 5, 2, 4)
+	addBar(maximizeIcon, 5, 15, 4, 2)
+	addBar(maximizeIcon, 5, 13, 2, 4)
+	addBar(maximizeIcon, 13, 15, 4, 2)
+	addBar(maximizeIcon, 15, 13, 2, 4)
+
+	-- Restore icon: a back square sitting at the top-left of a front square,
+	-- tucked in behind it like a clean two-square copy/restore glyph. The
+	-- back square's bottom-right corner is left undrawn where the front
+	-- square covers it, so the two outlines never cross.
+	addBar(restoreIcon, 5.5, 5.5, 8, 2)
+	addBar(restoreIcon, 5.5, 5.5, 2, 8)
+	addBar(restoreIcon, 11.5, 5.5, 2, 3)
+	addBar(restoreIcon, 5.5, 11.5, 3, 2)
+	addBar(restoreIcon, 8.5, 8.5, 8, 2)
+	addBar(restoreIcon, 8.5, 8.5, 2, 8)
+	addBar(restoreIcon, 14.5, 8.5, 2, 8)
+	addBar(restoreIcon, 8.5, 14.5, 8, 2)
+
+	local function tintIcons(color)
+		for index, part in ipairs(iconParts) do
+			F.tween("fullscreen_icon_part_" .. index, part, 0.12, {
+				BackgroundColor3 = color,
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		end
+	end
+
+	local function swapIcon(fullscreen)
+		local showIcon = fullscreen and restoreIcon or maximizeIcon
+		local hideIcon = fullscreen and maximizeIcon or restoreIcon
+		showIcon.Visible = true
+		showIcon.GroupTransparency = 1
+		F.tween("fullscreen_icon_show", showIcon, 0.14, {
+			GroupTransparency = 0,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local hideTween = F.tween("fullscreen_icon_hide", hideIcon, 0.14, {
+			GroupTransparency = 1,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		hideTween.Completed:Connect(function()
+			if hideIcon.GroupTransparency > 0.99 then
+				hideIcon.Visible = false
+			end
+		end)
+	end
+
+	local function topInset()
+		local ok, inset = pcall(function()
+			return SERVICES.GuiService:GetGuiInset()
+		end)
+		if ok and inset then
+			return inset.Y
+		end
+		return 0
+	end
+
+	local windowedDisplayOrder = ScreenGui.DisplayOrder
+
+	-- The window itself is a CanvasGroup, and CanvasGroups rasterize their
+	-- contents into a texture with a hard resolution cap. At fullscreen size
+	-- that texture exceeds the cap, so the engine down-resolves it and small
+	-- children (like the gear icons on toggles) render broken or blurry.
+	-- While fullscreen, the window's children therefore live inside a plain
+	-- Frame shell that renders directly with no texture at all.
+	local fullscreenShell
+
+	local function ensureShell()
+		if not fullscreenShell then
+			fullscreenShell = F.create("Frame", Root, {
+				Name = "FullscreenShell",
+				Visible = false,
+				BackgroundColor3 = COLORS.Background,
+				BorderSizePixel = 0,
+				ClipsDescendants = true,
+				ZIndex = 1,
+			})
+			F.addCorner(fullscreenShell, 6)
+			F.addStroke(fullscreenShell)
+
+			-- While the content lives in the shell, the window-level popup
+			-- repositioning handlers never fire (the window itself no longer
+			-- moves or resizes), so mirror them here.
+			fullscreenShell:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+				if activeToggleSettings and toggleSettingsPopup.Visible then
+					F.positionSettingsPopup(activeToggleSettings.button)
+					if typeOptionsOpen then
+						F.positionTypeOptions()
+					end
+				end
+			end)
+			fullscreenShell:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+				if activeToggleSettings and toggleSettingsPopup.Visible then
+					F.positionSettingsPopup(activeToggleSettings.button)
+					if typeOptionsOpen then
+						F.positionTypeOptions()
+					end
+				end
+				if dropdownOpen and F.updateDropdownPopupGeometry then
+					F.updateDropdownPopupGeometry()
+				end
+			end)
+		end
+		return fullscreenShell
+	end
+
+	local function moveWindowChildren(target, source)
+		-- The source must be the container the children currently live in:
+		-- entering fullscreen moves window -> shell, leaving moves shell ->
+		-- window. Reading the wrong one silently swaps nothing, leaving an
+		-- empty gray window behind.
+		for _, child in ipairs(source:GetChildren()) do
+			child.Parent = target
+		end
+	end
+
+	-- Tracks where the window's children currently live. The shell is used
+	-- for fullscreen AND whenever the window is larger than the CanvasGroup
+	-- texture cap (CONFIG.WINDOW_TEXTURE_LIMIT), because a plain Frame
+	-- renders crisply at any size.
+	local childrenInShell = false
+
+	local function swapChildrenToShell()
+		if childrenInShell then
+			return
+		end
+		local shell = ensureShell()
+		shell.AnchorPoint = window.AnchorPoint
+		shell.Position = window.Position
+		shell.Size = window.Size
+		shell.BackgroundColor3 = window.BackgroundColor3
+		shell.BackgroundTransparency = window.BackgroundTransparency
+		moveWindowChildren(shell, window)
+		window.Visible = false
+		shell.Visible = true
+		childrenInShell = true
+	end
+
+	local function swapChildrenToWindow()
+		if not childrenInShell then
+			return
+		end
+		local shell = ensureShell()
+		window.AnchorPoint = shell.AnchorPoint
+		window.Position = shell.Position
+		window.Size = shell.Size
+		moveWindowChildren(window, shell)
+		shell.Visible = false
+		window.Visible = true
+		childrenInShell = false
+	end
+
+	-- Keeps the children in whichever container can render the requested
+	-- size without exceeding the CanvasGroup texture cap.
+	function F.updateWindowContainer(size)
+		if state.fullscreen or state.minimized then
+			return
+		end
+		local container = childrenInShell and fullscreenShell or window
+		local desired = size
+			or Vector2.new(container.Size.X.Offset, container.Size.Y.Offset)
+		local tooBig = desired.X > CONFIG.WINDOW_TEXTURE_LIMIT
+			or desired.Y > CONFIG.WINDOW_TEXTURE_LIMIT
+		if tooBig and not childrenInShell then
+			swapChildrenToShell()
+		elseif not tooBig and childrenInShell then
+			swapChildrenToWindow()
+		end
+	end
+
+	-- Moves the children back into the (CanvasGroup) window so its group
+	-- fade can be used, e.g. right before minimizing or hiding the UI.
+	function F.restoreWindowContainer()
+		if not state.fullscreen then
+			swapChildrenToWindow()
+		end
+	end
+
+	-- The container that currently holds the window's children; drags and
+	-- resizes must target it.
+	function F.activeWindowContainer()
+		if childrenInShell and fullscreenShell then
+			return fullscreenShell
+		end
+		return window
+	end
+
+	-- Tweens belonging to the current fullscreen enter/exit animation. They
+	-- are cancelled explicitly whenever a new fullscreen call interrupts a
+	-- running one, so a half-finished animation can never fire its completion
+	-- handler afterwards and corrupt the saved geometry.
+	local fullscreenTweens = {}
+
+	local function cancelFullscreenTweens()
+		for _, tween in ipairs(fullscreenTweens) do
+			tween:Cancel()
+		end
+		table.clear(fullscreenTweens)
+	end
+
+	local function trackFullscreenTween(key, object, properties)
+		local tween = F.tween(key, object, 0.24, properties,
+			Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		table.insert(fullscreenTweens, tween)
+		return tween
+	end
+
+	-- Close anything anchored to the window before the layout changes.
+	local function closeAnchoredPopups()
+		if F.closeFeatureDropdowns then
+			F.closeFeatureDropdowns()
+		end
+		if F.setDropdownOpen then
+			F.setDropdownOpen(false)
+		end
+		if F.setToggleSettingsOpen then
+			F.setToggleSettingsOpen(false)
+		end
+		if F.closeColorPicker then
+			F.closeColorPicker()
+		end
+		if F.hideFeatureTooltip then
+			F.hideFeatureTooltip()
+		end
+		-- The settings popups normally close with a short fade, but that fade
+		-- can be interrupted by the fullscreen transition, leaving a popup
+		-- stranded over the fullscreen UI at its old windowed position.
+		-- Strip them off immediately instead; both open paths reset
+		-- GroupTransparency before fading back in.
+		toggleSettingsPopup.Visible = false
+		toggleSettingsPopup.GroupTransparency = 1
+		typeOptionsPopup.Visible = false
+	end
+
+	local function setWindowCorner(corner, radius)
+		if corner then
+			corner.CornerRadius = radius
+		end
+	end
+
+	function F.setWindowFullscreen(fullscreen, animate)
+		if state.minimized or state.fullscreen == fullscreen then
+			return
+		end
+		local animated = animate ~= false
+		-- Instant calls (minimize leaving fullscreen) always proceed, even if
+		-- a fullscreen animation is still running — they cancel it and jump
+		-- straight to the final state. Animated calls still wait their turn.
+		if state.animating and animated then
+			return
+		end
+		cancelFullscreenTweens()
+
+		F.endDrag()
+		local container = F.activeWindowContainer()
+		local currentPosition = F.getOffsetPosition(container)
+		local currentSize = Vector2.new(container.Size.X.Offset, container.Size.Y.Offset)
+		local viewportSize = F.getSettingsViewport()
+		local inset = topInset()
+
+		local targetPosition
+		local targetSize
+		if fullscreen then
+			state.preFullscreen = {
+				position = currentPosition,
+				size = currentSize,
+			}
+			targetPosition = Vector2.new(0, inset)
+			targetSize = Vector2.new(
+				math.max(viewportSize.X, 1),
+				math.max(viewportSize.Y - inset, 1)
+			)
+			ScreenGui.DisplayOrder = 999999
+		else
+			local previous = state.preFullscreen
+			state.preFullscreen = nil
+			targetPosition = previous and previous.position or state.fullPos
+			targetSize = previous and previous.size or state.fullSize
+		end
+
+		state.fullscreen = fullscreen
+		swapIcon(fullscreen)
+		closeAnchoredPopups()
+
+		-- Pin the window to a plain top-left offset position so its saved
+		-- geometry is always in drag coordinates.
+		window.AnchorPoint = Vector2.zero
+		window.Position = UDim2.fromOffset(currentPosition.X, currentPosition.Y)
+		window.Size = UDim2.fromOffset(currentSize.X, currentSize.Y)
+
+		local shell = ensureShell()
+		shell.AnchorPoint = Vector2.zero
+
+		local function finalize()
+			-- Safety net: nothing that anchored itself to the window during
+			-- the transition should survive it.
+			closeAnchoredPopups()
+			state.fullPos = targetPosition
+			state.fullSize = targetSize
+			if not fullscreen then
+				-- Drop back below other PlayerGui layers only once the window
+				-- has finished shrinking, so it does not pop behind them
+				-- mid-animation.
+				ScreenGui.DisplayOrder = windowedDisplayOrder
+			end
+			state.animating = false
+		end
+
+		if fullscreen then
+			-- Hand the children to the shell at the window's current geometry
+			-- (pixel-identical, so nothing jumps), then grow the shell. If
+			-- the window was already in large (shell) mode, they are already
+			-- there.
+			swapChildrenToShell()
+			shell.Position = UDim2.fromOffset(currentPosition.X, currentPosition.Y)
+			shell.Size = UDim2.fromOffset(currentSize.X, currentSize.Y)
+			resizeGrip.Visible = false
+			local shellCorner = shell:FindFirstChildOfClass("UICorner")
+			if animated then
+				state.animating = true
+				trackFullscreenTween("window_fullscreen_position", shell, {
+					Position = UDim2.fromOffset(targetPosition.X, targetPosition.Y),
+				})
+				local sizeTween = trackFullscreenTween("window_fullscreen_size", shell, {
+					Size = UDim2.fromOffset(targetSize.X, targetSize.Y),
+				})
+				if shellCorner then
+					trackFullscreenTween("window_fullscreen_corner", shellCorner, {
+						CornerRadius = UDim.new(0, 0),
+					})
+				end
+				-- Cancelled tweens also fire Completed (with a Cancelled
+				-- state); only finish up when the tween genuinely completed.
+				sizeTween.Completed:Connect(function(playbackState)
+					if playbackState ~= Enum.PlaybackState.Completed then
+						return
+					end
+					finalize()
+				end)
+			else
+				shell.Position = UDim2.fromOffset(targetPosition.X, targetPosition.Y)
+				shell.Size = UDim2.fromOffset(targetSize.X, targetSize.Y)
+				setWindowCorner(shellCorner, UDim.new(0, 0))
+				finalize()
+			end
+		else
+			-- Put the window back at its saved geometry while it is still
+			-- hidden, then shrink the shell onto it and swap the children
+			-- back on the last frame so nothing flickers.
+			closeAnchoredPopups()
+			window.Size = UDim2.fromOffset(targetSize.X, targetSize.Y)
+			window.Position = UDim2.fromOffset(targetPosition.X, targetPosition.Y)
+			resizeGrip.Visible = true
+			local shellCorner = shell:FindFirstChildOfClass("UICorner")
+			if animated then
+				state.animating = true
+				trackFullscreenTween("window_fullscreen_position", shell, {
+					Position = UDim2.fromOffset(targetPosition.X, targetPosition.Y),
+				})
+				local sizeTween = trackFullscreenTween("window_fullscreen_size", shell, {
+					Size = UDim2.fromOffset(targetSize.X, targetSize.Y),
+				})
+				if shellCorner then
+					trackFullscreenTween("window_fullscreen_corner", shellCorner, {
+						CornerRadius = UDim.new(0, 6),
+					})
+				end
+				sizeTween.Completed:Connect(function(playbackState)
+					if playbackState ~= Enum.PlaybackState.Completed then
+						return
+					end
+					swapChildrenToWindow()
+					-- A large pre-fullscreen size keeps rendering through
+					-- the shell so it stays crisp.
+					F.updateWindowContainer(targetSize)
+					finalize()
+				end)
+			else
+				shell.Position = UDim2.fromOffset(targetPosition.X, targetPosition.Y)
+				shell.Size = UDim2.fromOffset(targetSize.X, targetSize.Y)
+				setWindowCorner(shellCorner, UDim.new(0, 6))
+				swapChildrenToWindow()
+				F.updateWindowContainer(targetSize)
+				finalize()
+			end
+		end
+	end
+
+	fullscreenButton.MouseEnter:Connect(function()
+		F.tween("fullscreen_bg", fullscreenButton, 0.12, {
+			BackgroundTransparency = 0.35,
+		})
+		tintIcons(COLORS.IconHover)
+	end)
+
+	fullscreenButton.MouseLeave:Connect(function()
+		F.tween("fullscreen_bg", fullscreenButton, 0.12, {
+			BackgroundTransparency = 1,
+		})
+		tintIcons(COLORS.Icon)
+	end)
+
+	fullscreenButton.MouseButton1Click:Connect(function()
+		F.setWindowFullscreen(not state.fullscreen)
+	end)
+end
 
 function F.setGuiVisible(visible)
 	if state.visibilityAnimating or state.animating or state.guiVisible == visible then
@@ -3916,29 +5748,68 @@ function F.setGuiVisible(visible)
 		if typeof(F.setToggleSettingsOpen) == "function" then
 			F.setToggleSettingsOpen(false)
 		end
-		local fade = F.tween(
-			"root_visibility",
-			Root,
-			0.14,
-			{ GroupTransparency = 1 },
-			Enum.EasingStyle.Quad,
-			Enum.EasingDirection.In
-		)
-		fade.Completed:Wait()
+		-- Fullscreen renders through the plain-Frame shell, which cannot be
+		-- group-faded; drop back to the window instantly so the normal fade
+		-- path works.
+		if state.fullscreen then
+			F.setWindowFullscreen(false, false)
+		end
+		-- Same for large (shell) mode: the window must hold the children for
+		-- its group fade to affect them.
+		F.restoreWindowContainer()
+		if state.minimized then
+			local miniFade = F.tween(
+				"ui_minibar_visibility",
+				miniBar,
+				0.14,
+				{ GroupTransparency = 1 },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.In
+			)
+			miniFade.Completed:Wait()
+		else
+			local windowFade = F.tween(
+				"ui_window_visibility",
+				window,
+				0.14,
+				{ GroupTransparency = 1 },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.In
+			)
+			windowFade.Completed:Wait()
+		end
 		Root.Visible = false
-		Root.GroupTransparency = 0
 	else
-		Root.GroupTransparency = 1
 		Root.Visible = true
-		local fade = F.tween(
-			"root_visibility",
-			Root,
-			0.14,
-			{ GroupTransparency = 0 },
-			Enum.EasingStyle.Quad,
-			Enum.EasingDirection.Out
-		)
-		fade.Completed:Wait()
+		F.restoreWindowContainer()
+		if state.minimized then
+			miniBar.GroupTransparency = 1
+			F.tween(
+				"ui_minibar_visibility",
+				miniBar,
+				0.14,
+				{ GroupTransparency = 0 },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			)
+		else
+			window.GroupTransparency = 1
+			local windowFade = F.tween(
+				"ui_window_visibility",
+				window,
+				0.14,
+				{ GroupTransparency = 0 },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			)
+			windowFade.Completed:Connect(function(playbackState)
+				if playbackState ~= Enum.PlaybackState.Completed then
+					return
+				end
+				-- A large window keeps rendering through the shell.
+				F.updateWindowContainer()
+			end)
+		end
 	end
 
 	state.visibilityAnimating = false
@@ -3954,11 +5825,26 @@ SERVICES.UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
+-- While the menu is open, keep the cursor free even in first person. The
+-- default camera scripts re-lock the mouse (MouseBehavior = LockCenter) every
+-- frame while in first person, so this runs right AFTER the camera update
+-- each frame and overrides it back to a free cursor. When the menu closes we
+-- simply stop overriding, and the camera re-locks the mouse on its own.
+SERVICES.RunService:BindToRenderStep(
+	"MidnightUI_FreeMouse",
+	Enum.RenderPriority.Camera.Value + 1,
+	function()
+		if state.guiVisible then
+			SERVICES.UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		end
+	end
+)
+
 -- ============================================================================
 -- Other features! page: "new features" tab with its own tabbed groupbox.
 -- ============================================================================
 
-local otherFeaturesPage = F.create("Frame", content, {
+local otherFeaturesPage = F.create("Frame", contentBody, {
 	Name = "OtherFeaturesPage",
 	Position = UDim2.fromOffset(0, 0),
 	Size = UDim2.fromScale(1, 1),
@@ -3967,738 +5853,1172 @@ local otherFeaturesPage = F.create("Frame", content, {
 	ZIndex = 2,
 })
 
-local featuresGroup = F.create("Frame", otherFeaturesPage, {
-	Name = "FeaturesGroupBox",
-	Position = UDim2.fromOffset(CONFIG.spacing, 16),
-	Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 69),
-	BackgroundColor3 = Color3.fromRGB(16, 16, 19),
-	BorderSizePixel = 0,
-	ClipsDescendants = true,
-	ZIndex = 3,
-})
-F.addCorner(featuresGroup, 7)
-F.addStroke(featuresGroup)
-
-local featuresGroupShadow = Instance.new("UIShadow")
-featuresGroupShadow.Name = "GroupBoxShadow"
-featuresGroupShadow.Color = Color3.fromRGB(0, 0, 0)
-featuresGroupShadow.Transparency = 0.56
-featuresGroupShadow.BlurRadius = UDim.new(0, 14)
-featuresGroupShadow.Offset = UDim2.fromOffset(0, 4)
-featuresGroupShadow.Spread = UDim2.fromOffset(0, 1)
-featuresGroupShadow.ShowBehindParent = true
-featuresGroupShadow.Parent = featuresGroup
-
-local featuresHeaderRow = F.create("Frame", featuresGroup, {
-	Name = "HeaderRow",
-	Position = UDim2.fromOffset(CONFIG.spacing, 0),
-	Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 28),
-	BackgroundTransparency = 1,
-	ZIndex = 4,
-})
-F.create("UIListLayout", featuresHeaderRow, {
-	FillDirection = Enum.FillDirection.Horizontal,
-	HorizontalAlignment = Enum.HorizontalAlignment.Center,
-	VerticalAlignment = Enum.VerticalAlignment.Center,
-	SortOrder = Enum.SortOrder.LayoutOrder,
-	Padding = UDim.new(0, CONFIG.spacing),
-})
-
-local function makeHeaderTab(name, text, order)
-	return F.create("TextButton", featuresHeaderRow, {
-		Name = name,
-		Size = UDim2.fromOffset(0, 28),
-		AutomaticSize = Enum.AutomaticSize.X,
-		BackgroundTransparency = 1,
+-- Scoped so the many page/component locals free their registers once the
+-- page is built (the main chunk has a 200-local-register limit).
+do
+	local featuresGroup = F.create("Frame", otherFeaturesPage, {
+		Name = "FeaturesGroupBox",
+		Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing),
+		Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 69),
+		BackgroundColor3 = Color3.fromRGB(16, 16, 19),
 		BorderSizePixel = 0,
-		Text = text,
-		Font = Enum.Font.GothamBold,
-		TextSize = 12,
-		TextColor3 = COLORS.TabIdle,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		AutoButtonColor = false,
-		LayoutOrder = order,
+		ClipsDescendants = true,
+		ZIndex = 3,
+	})
+	F.addCorner(featuresGroup, 7)
+	F.addStroke(featuresGroup)
+
+	local featuresGroupShadow = Instance.new("UIShadow")
+	featuresGroupShadow.Name = "GroupBoxShadow"
+	featuresGroupShadow.Color = Color3.fromRGB(0, 0, 0)
+	featuresGroupShadow.Transparency = 0.56
+	featuresGroupShadow.BlurRadius = UDim.new(0, 14)
+	featuresGroupShadow.Offset = UDim2.fromOffset(0, 4)
+	featuresGroupShadow.Spread = UDim2.fromOffset(0, 1)
+	featuresGroupShadow.ShowBehindParent = true
+	featuresGroupShadow.Parent = featuresGroup
+
+	F.registerCollapsibleGroup(featuresGroup, featuresGroup.Size.Y.Offset)
+
+	local featuresHeaderRow = F.create("Frame", featuresGroup, {
+		Name = "HeaderRow",
+		Position = UDim2.fromOffset(CONFIG.spacing, 0),
+		-- Ends before the collapse arrow on the right, which shifts the whole
+		-- "features | containertab!" group left and keeps it clear of the arrow.
+		Size = UDim2.new(1, -((CONFIG.spacing * 3) + 22), 0, 28),
+		BackgroundTransparency = 1,
 		ZIndex = 4,
 	})
-end
-
-local featuresHeaderTab = makeHeaderTab("FeaturesHeaderTab", "features", 1)
-local containerHeaderTab = makeHeaderTab("ContainertabHeaderTab", "containertab!", 3)
-
-local headerTabDivider = F.create("Frame", featuresHeaderRow, {
-	Name = "HeaderTabDivider",
-	Size = UDim2.fromOffset(1, 12),
-	BackgroundColor3 = COLORS.Divider,
-	BorderSizePixel = 0,
-	LayoutOrder = 2,
-	ZIndex = 4,
-})
-
-F.create("Frame", featuresGroup, {
-	Name = "HeaderDivider",
-	Position = UDim2.fromOffset(CONFIG.spacing, 28),
-	Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1),
-	BackgroundColor3 = COLORS.Divider,
-	BorderSizePixel = 0,
-	ZIndex = 4,
-})
-
-local featuresContent = F.create("Frame", featuresGroup, {
-	Name = "FeaturesContent",
-	Position = UDim2.fromOffset(CONFIG.spacing, 34),
-	Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 220),
-	BackgroundTransparency = 1,
-	ZIndex = 4,
-})
-
-local containerContent = F.create("Frame", featuresGroup, {
-	Name = "ContainertabContent",
-	Position = UDim2.fromOffset(CONFIG.spacing, 34),
-	Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 220),
-	BackgroundTransparency = 1,
-	Visible = false,
-	ZIndex = 4,
-})
-
-local currentGroupTab = "features"
-local conditionalDropdownShown = false
-local sliderShown = false
-local helloShown = false
-
-local function containerContentBottom()
-	local sliderOffset = sliderShown and 54 or 0
-	local dropdownY = 36 + sliderOffset
-	if helloShown then
-		return dropdownY + 28 + 6 + 30
+	-- Both header tabs fill their own half of the row and center their text, so
+	-- each label sits in the middle of its section instead of hugging the divider.
+	-- The text lives in a padded child label: TextScaled fills that padded area,
+	-- which guarantees real breathing room on both sides at any window width.
+	function F.setHeaderTabColor(tab, color)
+		tab.TextColor3 = color
+		local label = tab:FindFirstChild("HeaderTabLabel")
+		if label then
+			label.TextColor3 = color
+		end
 	end
-	return dropdownY + 28
-end
 
-function F.refreshGroupHeight()
-	local contentBottom
-	if currentGroupTab == "features" then
-		contentBottom = conditionalDropdownShown and 64 or 30
-	else
-		contentBottom = containerContentBottom()
+	local function makeHeaderTab(name, text)
+		local tab = F.create("TextButton", featuresHeaderRow, {
+			Name = name,
+			Size = UDim2.new(0.5, -(CONFIG.spacing * 0.5), 1, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 4,
+		})
+		local label = F.makeText(
+			tab,
+			text,
+			UDim2.new(1, -(CONFIG.spacing * 2), 1, 0),
+			UDim2.fromOffset(CONFIG.spacing, 0),
+			12,
+			COLORS.TabIdle,
+			Enum.Font.GothamBold
+		)
+		label.Name = "HeaderTabLabel"
+		label.TextXAlignment = Enum.TextXAlignment.Center
+		label.TextWrapped = false
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Active = false
+		-- Keep the text at a fixed size and let narrow widths cut it off rather
+		-- than shrinking it into unreadable specks.
+		label.TextScaled = false
+		label.TextSize = 12
+		return tab
 	end
-	F.tween("features_group_size", featuresGroup, 0.22, {
-		Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 34 + contentBottom + CONFIG.spacing),
-	}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-end
 
-local revealStates = {}
+	local featuresHeaderTab = makeHeaderTab("FeaturesHeaderTab", "features")
+	featuresHeaderTab.Position = UDim2.fromOffset(0, 0)
 
-local function setRevealed(key, row, shown)
-	local revealState = revealStates[key]
-	if not revealState then
-		revealState = { shown = false, revision = 0 }
-		revealStates[key] = revealState
-	end
-	if revealState.shown == shown then
-		return
-	end
-	revealState.shown = shown
-	revealState.revision += 1
-	local revision = revealState.revision
-	if shown then
-		row.Visible = true
-		row.GroupTransparency = 1
-		F.tween("reveal_" .. key, row, 0.18, {
-			GroupTransparency = 0,
-		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	else
-		local hideTween = F.tween("reveal_" .. key, row, 0.14, {
-			GroupTransparency = 1,
-		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		hideTween.Completed:Connect(function()
-			if revealState.revision == revision and not revealState.shown then
-				row.Visible = false
-			end
-		end)
-	end
-end
+	local containerHeaderTab = makeHeaderTab("ContainertabHeaderTab", "containertab!")
+	containerHeaderTab.Position = UDim2.new(0.5, CONFIG.spacing * 0.5, 0, 0)
 
-local function createFeatureToggle(parent, name, y, text, onChanged)
-	local row = F.create("TextButton", parent, {
-		Name = name,
-		Position = UDim2.fromOffset(0, y),
-		Size = UDim2.new(1, 0, 0, 30),
-		BackgroundColor3 = COLORS.SelectBg,
-		BackgroundTransparency = 1,
+	local headerTabDivider = F.create("Frame", featuresHeaderRow, {
+		Name = "HeaderTabDivider",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Size = UDim2.fromOffset(1, 12),
+		BackgroundColor3 = COLORS.Divider,
 		BorderSizePixel = 0,
-		Text = "",
-		AutoButtonColor = false,
-		Active = true,
 		ZIndex = 5,
 	})
-	F.addCorner(row, 5)
 
-	local label = F.makeText(
-		row,
-		text,
-		UDim2.new(1, -66, 1, 0),
-		UDim2.fromOffset(0, 0),
-		13,
-		COLORS.TabIdle,
-		Enum.Font.GothamMedium
-	)
-	label.Name = "ToggleLabel"
-	label.ZIndex = 6
-	label.Active = false
-
-	local track = F.create("Frame", row, {
-		Name = "ToggleTrack",
-		Position = UDim2.new(1, -(36 + CONFIG.spacing), 0.5, -10),
-		Size = UDim2.fromOffset(36, 20),
-		BackgroundColor3 = Color3.fromRGB(57, 57, 64),
+	F.create("Frame", featuresGroup, {
+		Name = "HeaderDivider",
+		Position = UDim2.fromOffset(CONFIG.spacing, 28),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1),
+		BackgroundColor3 = COLORS.Divider,
 		BorderSizePixel = 0,
-		ZIndex = 6,
+		ZIndex = 4,
 	})
-	F.addCorner(track, 10)
 
-	local knob = F.create("Frame", track, {
-		Name = "ToggleKnob",
-		Position = UDim2.fromOffset(3, 3),
-		Size = UDim2.fromOffset(14, 14),
-		BackgroundColor3 = Color3.fromRGB(190, 190, 198),
-		BorderSizePixel = 0,
-		ZIndex = 7,
-	})
-	F.addCorner(knob, 7)
-
-	local toggleState = { enabled = false }
-
-	local function setEnabled(enabled)
-		toggleState.enabled = enabled
-		F.tween("feature_toggle_track_" .. name, track, 0.18, {
-			BackgroundColor3 = enabled and COLORS.Accent or Color3.fromRGB(57, 57, 64),
-		})
-		F.tween("feature_toggle_knob_" .. name, knob, 0.18, {
-			Position = enabled and UDim2.new(1, -17, 0, 3) or UDim2.fromOffset(3, 3),
-			BackgroundColor3 = enabled and Color3.fromRGB(245, 249, 255) or Color3.fromRGB(190, 190, 198),
-		})
-		if onChanged then
-			onChanged(enabled)
-		end
-	end
-
-	row.MouseEnter:Connect(function()
-		F.setToggleHover(true, row, label)
-	end)
-	row.MouseLeave:Connect(function()
-		F.setToggleHover(false, row, label)
-	end)
-	row.Activated:Connect(function()
-		setEnabled(not toggleState.enabled)
-	end)
-
-	toggleState.setEnabled = setEnabled
-	toggleState.row = row
-	toggleState.label = label
-	return toggleState
-end
-
-local function createFeatureSlider(parent, name, title, minValue, maxValue, defaultValue)
-	local minV = math.min(minValue, maxValue)
-	local maxV = math.max(minValue, maxValue)
-	local value = math.clamp(defaultValue, minV, maxV)
-	local dragging = false
-	local inputWidth = 46
-	local trackWidthOffset = inputWidth + CONFIG.spacing * 3
-
-	local titleLabel = F.makeText(
-		parent,
-		title,
-		UDim2.new(1, -(CONFIG.spacing + 46 + CONFIG.spacing), 0, 18),
-		UDim2.fromOffset(0, 0),
-		13,
-		COLORS.TabIdle,
-		Enum.Font.GothamMedium
-	)
-	titleLabel.Name = name .. "Title"
-	titleLabel.ZIndex = 6
-
-	local valueLabel = F.makeText(
-		parent,
-		"",
-		UDim2.fromOffset(46, 18),
-		UDim2.new(1, -CONFIG.spacing, 0, 0),
-		12,
-		COLORS.TabIdle,
-		Enum.Font.GothamMedium
-	)
-	valueLabel.Name = name .. "Value"
-	valueLabel.AnchorPoint = Vector2.new(1, 0)
-	valueLabel.TextXAlignment = Enum.TextXAlignment.Center
-	valueLabel.ZIndex = 6
-
-	local hitArea = F.create("TextButton", parent, {
-		Name = name .. "HitArea",
-		Position = UDim2.fromOffset(0, 18),
-		Size = UDim2.new(1, -trackWidthOffset, 0, 30),
+	local featuresContent = F.create("Frame", featuresGroup, {
+		Name = "FeaturesContent",
+		Position = UDim2.fromOffset(CONFIG.spacing, 34),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 220),
 		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Text = "",
-		AutoButtonColor = false,
-		Active = true,
-		ZIndex = 9,
+		ZIndex = 4,
 	})
 
-	local track = F.create("Frame", parent, {
-		Name = name .. "Track",
-		Position = UDim2.fromOffset(0, 31),
-		Size = UDim2.new(1, -trackWidthOffset, 0, 4),
-		BackgroundColor3 = Color3.fromRGB(55, 55, 62),
-		BorderSizePixel = 0,
-		ZIndex = 6,
-	})
-	F.addCorner(track, 3)
-
-	local trackStroke = F.create("UIStroke", track, {
-		Color = COLORS.Accent,
-		Thickness = 1,
-		Transparency = 1,
-	})
-
-	local fill = F.create("Frame", track, {
-		Name = "SliderFill",
-		Size = UDim2.new(0, 0, 1, 0),
-		BackgroundColor3 = COLORS.Accent,
-		BorderSizePixel = 0,
-		ZIndex = 7,
-	})
-	F.addCorner(fill, 3)
-
-	local knob = F.create("Frame", track, {
-		Name = "SliderKnob",
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.new(0, 0, 0.5, 0),
-		Size = UDim2.fromOffset(12, 12),
-		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-		BorderSizePixel = 0,
-		ZIndex = 8,
-	})
-	F.addCorner(knob, 6)
-
-	local input = F.create("TextBox", parent, {
-		Name = name .. "Input",
-		Position = UDim2.new(1, -(CONFIG.spacing + inputWidth), 0, 20),
-		Size = UDim2.fromOffset(inputWidth, 24),
-		BackgroundColor3 = Color3.fromRGB(39, 39, 45),
-		BorderSizePixel = 0,
-		Text = "",
-		PlaceholderText = "0",
-		PlaceholderColor3 = COLORS.Muted,
-		TextColor3 = COLORS.Title,
-		TextSize = 12,
-		Font = Enum.Font.GothamMedium,
-		ClearTextOnFocus = false,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		ZIndex = 7,
-	})
-	F.addCorner(input, 5)
-	F.addStroke(input)
-
-	input.MouseEnter:Connect(function()
-		F.tween(name .. "_input_hover", input, 0.13, {
-			BackgroundColor3 = Color3.fromRGB(48, 48, 56),
-		})
-	end)
-
-	input.MouseLeave:Connect(function()
-		F.tween(name .. "_input_hover", input, 0.13, {
-			BackgroundColor3 = Color3.fromRGB(39, 39, 45),
-		})
-	end)
-
-	local function formatValue(number)
-		return string.format("%d", math.floor(number + 0.5))
-	end
-
-	local function setValue(newValue, updateInput)
-		newValue = math.clamp(math.floor(newValue + 0.5), minV, maxV)
-		value = newValue
-		local alpha = (maxV == minV) and 0 or (newValue - minV) / (maxV - minV)
-		F.tween(name .. "_fill", fill, 0.13, {
-			Size = UDim2.new(alpha, 0, 1, 0),
-		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		F.tween(name .. "_knob", knob, 0.13, {
-			Position = UDim2.new(alpha, 0, 0.5, 0),
-		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-		valueLabel.Text = formatValue(newValue)
-		if updateInput then
-			input.Text = formatValue(newValue)
-		end
-	end
-
-	local function setFromPointer(screenX)
-		local trackPosition = track.AbsolutePosition.X
-		local trackWidth = math.max(track.AbsoluteSize.X, 1)
-		local alpha = math.clamp((screenX - trackPosition) / trackWidth, 0, 1)
-		setValue(minV + (maxV - minV) * alpha, true)
-	end
-
-	local function setHover(hovered)
-		F.tween(name .. "_track_hover", track, 0.14, {
-			BackgroundColor3 = hovered and Color3.fromRGB(72, 72, 82) or Color3.fromRGB(55, 55, 62),
-		})
-		F.tween(name .. "_stroke_hover", trackStroke, 0.14, {
-			Transparency = hovered and 0.45 or 1,
-		})
-		F.tween(name .. "_knob_hover", knob, 0.14, {
-			Size = hovered and UDim2.fromOffset(14, 14) or UDim2.fromOffset(12, 12),
-		})
-		F.tween(name .. "_fill_hover", fill, 0.14, {
-			BackgroundColor3 = hovered and Color3.fromRGB(105, 195, 255) or COLORS.Accent,
-		})
-	end
-
-	local function pointerInsideHitArea(inputObject)
-		local point = getPointerPosition(inputObject)
-		local position = hitArea.AbsolutePosition
-		local size = hitArea.AbsoluteSize
-		return point.X >= position.X and point.X <= position.X + size.X
-			and point.Y >= position.Y and point.Y <= position.Y + size.Y
-	end
-
-	hitArea.InputBegan:Connect(function(inputObject)
-		local inputType = inputObject.UserInputType
-		if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
-			return
-		end
-		dragging = true
-		setHover(true)
-		setFromPointer(getPointerPosition(inputObject).X)
-	end)
-
-	hitArea.MouseEnter:Connect(function()
-		setHover(true)
-	end)
-
-	hitArea.MouseLeave:Connect(function()
-		if not dragging then
-			setHover(false)
-		end
-	end)
-
-	SERVICES.UserInputService.InputChanged:Connect(function(inputObject)
-		if not dragging then
-			return
-		end
-		if inputObject.UserInputType == Enum.UserInputType.MouseMovement
-			or inputObject.UserInputType == Enum.UserInputType.Touch then
-			setFromPointer(getPointerPosition(inputObject).X)
-		end
-	end)
-
-	SERVICES.UserInputService.InputEnded:Connect(function(inputObject)
-		if inputObject.UserInputType == Enum.UserInputType.MouseButton1
-			or inputObject.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-			setHover(pointerInsideHitArea(inputObject))
-		end
-	end)
-
-	input.FocusLost:Connect(function()
-		local typedValue = tonumber(input.Text)
-		if typedValue then
-			setValue(typedValue, true)
-		else
-			input.Text = formatValue(value)
-		end
-	end)
-
-	setValue(value, true)
-
-	return {
-		setValue = setValue,
-		getValue = function()
-			return value
-		end,
-	}
-end
-
-local featureDropdownOpen = nil
-
-function F.closeFeatureDropdowns()
-	local current = featureDropdownOpen
-	if current then
-		current.close()
-	end
-end
-
-local function createFeatureDropdown(parent, name, y, options, defaultOption, onSelect)
-	local selected = defaultOption
-	local isOpen = false
-
-	local button = F.create("TextButton", parent, {
-		Name = name .. "Button",
-		Position = UDim2.fromOffset(0, y),
-		Size = UDim2.new(1, 0, 0, 28),
-		BackgroundColor3 = Color3.fromRGB(43, 43, 49),
-		BorderSizePixel = 0,
-		Text = "",
-		AutoButtonColor = false,
-		ZIndex = 7,
-	})
-	F.addCorner(button, 5)
-
-	local buttonText = F.makeText(
-		button,
-		selected,
-		UDim2.new(1, -34, 1, 0),
-		UDim2.fromOffset(9, 0),
-		13,
-		COLORS.TabIdle,
-		Enum.Font.GothamMedium
-	)
-	buttonText.Name = "DropdownText"
-	buttonText.TextTruncate = Enum.TextTruncate.None
-	buttonText.ZIndex = 8
-	buttonText.Active = false
-
-	local function makeChevron(chevronName, positionOffset, rotation)
-		return F.create("Frame", button, {
-			Name = chevronName,
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Position = UDim2.new(1, positionOffset, 0.5, -1),
-			Size = UDim2.fromOffset(6, 1.5),
-			Rotation = rotation,
-			BackgroundColor3 = COLORS.Icon,
-			BorderSizePixel = 0,
-			ZIndex = 8,
-		})
-	end
-
-	local chevronLeft = makeChevron("ChevronLeft", -17, 42)
-	local chevronRight = makeChevron("ChevronRight", -13, -42)
-
-	local popup = F.create("CanvasGroup", Root, {
-		Name = name .. "Options",
-		Position = UDim2.fromOffset(0, 0),
-		Size = UDim2.fromOffset(160, 8),
-		BackgroundColor3 = Color3.fromRGB(21, 21, 25),
-		BorderSizePixel = 0,
-		GroupTransparency = 1,
+	local containerContent = F.create("Frame", featuresGroup, {
+		Name = "ContainertabContent",
+		Position = UDim2.fromOffset(CONFIG.spacing, 34),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 220),
+		BackgroundTransparency = 1,
 		Visible = false,
-		ClipsDescendants = true,
-		ZIndex = 5000,
+		ZIndex = 4,
 	})
-	F.addCorner(popup, 5)
-	F.addStroke(popup)
 
-	local popupTargetWidth = 160
-	local popupTargetHeight = 8 + #options * 24
-	local popupAnimHeight = F.create("NumberValue", popup, {
-		Name = "AnimHeight",
-		Value = 0,
-	})
-	local popupRevision = 0
+	local currentGroupTab = "features"
+	local conditionalDropdownShown = false
+	local sliderShown = false
+	local helloShown = false
 
-	local function applyPopupLayout()
-		popup.Size = UDim2.fromOffset(popupTargetWidth, math.max(popupAnimHeight.Value, 0))
+	local function containerContentBottom()
+		local sliderOffset = sliderShown and 54 or 0
+		local dropdownY = 36 + sliderOffset
+		if helloShown then
+			return dropdownY + 28 + 6 + 30
+		end
+		return dropdownY + 28
 	end
 
-	popupAnimHeight.Changed:Connect(applyPopupLayout)
-
-	local optionButtons = {}
-
-	local function refreshOptionColors()
-		for optionName, optionButton in pairs(optionButtons) do
-			local optionLabel = optionButton:FindFirstChild("OptionLabel")
-			if optionLabel then
-				optionLabel.TextColor3 = optionName == selected and COLORS.Accent or COLORS.TabIdle
-			end
+	function F.refreshGroupHeight()
+		local contentBottom
+		if currentGroupTab == "features" then
+			contentBottom = conditionalDropdownShown and 64 or 30
+		else
+			contentBottom = containerContentBottom()
 		end
-	end
-
-	local function positionPopup()
-		local buttonPosition = button.AbsolutePosition
-		local buttonSize = button.AbsoluteSize
-		local rootOrigin = Root.AbsolutePosition
-		local rootSize = Root.AbsoluteSize
-		if rootSize.X <= 0 or rootSize.Y <= 0 then
-			local currentCamera = workspace.CurrentCamera
-			rootSize = currentCamera and currentCamera.ViewportSize or Vector2.new(1280, 720)
-		end
-		local popupWidth = math.min(math.max(buttonSize.X, 260), math.max(48, rootSize.X - 16))
-		local x = buttonPosition.X - rootOrigin.X
-		local y = buttonPosition.Y - rootOrigin.Y + buttonSize.Y + 4
-		x = math.clamp(x, 8, math.max(8, rootSize.X - popupWidth - 8))
-		if y + popupTargetHeight > rootSize.Y - 8 then
-			y = math.max(8, buttonPosition.Y - rootOrigin.Y - popupTargetHeight - 4)
-		end
-		popupTargetWidth = popupWidth
-		popup.Position = UDim2.fromOffset(x, y)
-		applyPopupLayout()
-	end
-
-	local api
-
-	local function close()
-		if not isOpen then
+		local expandedHeight = 34 + contentBottom + CONFIG.spacing
+		F.setGroupBoxExpandedHeight(featuresGroup, expandedHeight)
+		if F.isGroupBoxCollapsed(featuresGroup) then
 			return
 		end
-		isOpen = false
-		popupRevision += 1
-		local revision = popupRevision
-		if featureDropdownOpen == api then
-			featureDropdownOpen = nil
-		end
-		local fadeTween = F.tween(name .. "_popup_fade", popup, 0.12, {
-			GroupTransparency = 1,
-		})
-		F.tween(name .. "_popup_collapse", popupAnimHeight, 0.14, {
-			Value = 0,
-		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-		fadeTween.Completed:Connect(function()
-			if popupRevision == revision and not isOpen then
-				popup.Visible = false
-			end
-		end)
-		F.tween(name .. "_chevron_left", chevronLeft, 0.14, {
-			Rotation = 42,
-			BackgroundColor3 = COLORS.Icon,
-		})
-		F.tween(name .. "_chevron_right", chevronRight, 0.14, {
-			Rotation = -42,
-			BackgroundColor3 = COLORS.Icon,
-		})
-		F.tween(name .. "_text", buttonText, 0.12, {
-			TextColor3 = COLORS.TabIdle,
-		})
-		F.tween(name .. "_bg", button, 0.12, {
-			BackgroundColor3 = Color3.fromRGB(43, 43, 49),
-		})
-	end
-
-	local function open()
-		if isOpen then
-			return
-		end
-		F.closeFeatureDropdowns()
-		featureDropdownOpen = api
-		isOpen = true
-		popupRevision += 1
-		refreshOptionColors()
-		popupAnimHeight.Value = 0
-		positionPopup()
-		popup.Visible = true
-		popup.GroupTransparency = 1
-		popup.Size = UDim2.fromOffset(popupTargetWidth, 0)
-		F.tween(name .. "_popup_fade", popup, 0.12, {
-			GroupTransparency = 0,
-		})
-		F.tween(name .. "_popup_expand", popupAnimHeight, 0.18, {
-			Value = popupTargetHeight,
+		F.tween("features_group_size", featuresGroup, 0.22, {
+			Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, expandedHeight),
 		}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-		F.tween(name .. "_chevron_left", chevronLeft, 0.14, {
-			Rotation = -42,
-			BackgroundColor3 = COLORS.White,
-		})
-		F.tween(name .. "_chevron_right", chevronRight, 0.14, {
-			Rotation = 42,
-			BackgroundColor3 = COLORS.White,
-		})
-		F.tween(name .. "_text", buttonText, 0.12, {
-			TextColor3 = COLORS.White,
-		})
-		F.tween(name .. "_bg", button, 0.12, {
-			BackgroundColor3 = Color3.fromRGB(51, 51, 58),
-		})
 	end
 
-	api = {
-		close = close,
-		refresh = function()
-			if isOpen then
-				positionPopup()
-			end
-		end,
-		button = button,
-		popup = popup,
-		isOpen = function()
-			return isOpen
-		end,
-		getSelected = function()
-			return selected
-		end,
-	}
+	local revealStates = {}
 
-	for index, optionName in ipairs(options) do
-		local optionButton = F.create("TextButton", popup, {
-			Name = "Option_" .. string.gsub(optionName, "[%s%.!%-]", "_"),
-			Position = UDim2.fromOffset(4, 4 + (index - 1) * 24),
-			Size = UDim2.new(1, -8, 0, 22),
+	local function setRevealed(key, row, shown)
+		local revealState = revealStates[key]
+		if not revealState then
+			revealState = { shown = false, revision = 0 }
+			revealStates[key] = revealState
+		end
+		if revealState.shown == shown then
+			return
+		end
+		revealState.shown = shown
+		revealState.revision += 1
+		local revision = revealState.revision
+		row:SetAttribute("MidnightSearchShown", shown)
+		if shown then
+			row.Visible = true
+			row.GroupTransparency = 1
+			F.tween("reveal_" .. key, row, 0.18, {
+				GroupTransparency = 0,
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		else
+			local hideTween = F.tween("reveal_" .. key, row, 0.14, {
+				GroupTransparency = 1,
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			hideTween.Completed:Connect(function()
+				if revealState.revision == revision and not revealState.shown then
+					row.Visible = false
+				end
+			end)
+		end
+
+		-- Keep the global search's cached scan in sync so a feature becomes
+		-- searchable as soon as it is revealed (and disappears when hidden).
+		if F.invalidateSearchIndex then
+			F.invalidateSearchIndex()
+		end
+	end
+
+	-- ============================================================================
+	-- Notification system. Scoped in its own do-block so its locals do not add to
+	-- the main chunk's register pressure. The position is chosen by the
+	-- "Notifications" group box further down this page.
+	-- ============================================================================
+	do
+		local notificationPosition = "Top center"
+		local activeNotifications = {}
+		local notificationSerial = 0
+
+		-- Notifications live in their own ScreenGui with a very high DisplayOrder so
+		-- they draw above the rest of the game's UI.
+		local notificationGui = F.create("ScreenGui", PLAYER.PlayerGui, {
+			Name = "MidnightNotifications",
+			ResetOnSpawn = false,
+			IgnoreGuiInset = true,
+			ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+			DisplayOrder = 1000000,
+		})
+
+		local NOTIFICATION_WIDTH = 250
+		local NOTIFICATION_HEIGHT = 27
+		local NOTIFICATION_START_WIDTH = 10
+		local NOTIFICATION_MARGIN = 12
+		local NOTIFICATION_STACK_GAP = 4
+		-- Entrance is a single continuous timeline: the slide, the outward width
+		-- bloom and the fade all start on the same frame and share an easing family,
+		-- so there is no visible pause between "arrived" and "expanded".
+		local NOTIFICATION_ENTER_TIME = 0.38
+		local NOTIFICATION_CORNER_TIME = 0.32
+		local NOTIFICATION_FADE_TIME = 0.22
+		-- Reflow (existing cards sliding to make room) is deliberately slower than a
+		-- snap but shorter than an entrance so stacking still feels responsive.
+		local NOTIFICATION_REFLOW_TIME = 0.30
+		local NOTIFICATION_VISIBLE_TIME = 2.5
+		local NOTIFICATION_EXIT_TIME = 0.26
+		local NOTIFICATION_CORNER_EXIT_TIME = 0.22
+
+		-- Height of the Roblox topbar. With IgnoreGuiInset enabled, coordinates start
+		-- at the true screen top, so top notifications have to clear this themselves
+		-- or they end up behind the Roblox menu buttons.
+		local function notificationTopInset()
+			local ok, topLeft = pcall(function()
+				return SERVICES.GuiService:GetGuiInset()
+			end)
+			if ok and topLeft then
+				return topLeft.Y
+			end
+			return 0
+		end
+
+		local function shiftNotificationY(position, offset)
+			return UDim2.fromOffset(position.X.Offset, position.Y.Offset + offset)
+		end
+
+		local function notificationLayout(position, screenSize)
+			local width = math.min(NOTIFICATION_WIDTH, math.max(80, screenSize.X - NOTIFICATION_MARGIN * 2))
+			local height = NOTIFICATION_HEIGHT
+			local margin = NOTIFICATION_MARGIN
+			local centerX = math.floor(screenSize.X * 0.5)
+			local bottomCenterY = screenSize.Y - height - 104
+			local bottomCornerY = screenSize.Y - height - margin
+			local topY = margin + notificationTopInset()
+
+			if position == "Bottom center" then
+				-- Stacks upward like the bottom corners: the newest card sits nearest
+				-- the bottom edge (just above the hotbar) and older cards rise. That
+				-- way a new card always enters from below the stack instead of
+				-- crossing the cards that are already visible.
+				return {
+					anchor = Vector2.new(0.5, 0),
+					start = UDim2.fromOffset(centerX, bottomCenterY + 34),
+					final = UDim2.fromOffset(centerX, bottomCenterY),
+					exit = UDim2.fromOffset(centerX, bottomCenterY + 34),
+					width = width,
+					expands = true,
+					stacksUp = true,
+				}
+			elseif position == "Top left" then
+				return {
+					anchor = Vector2.new(0, 0),
+					start = UDim2.fromOffset(-width - 8, topY),
+					final = UDim2.fromOffset(margin, topY),
+					exit = UDim2.fromOffset(-width - 8, topY),
+					width = width,
+					expands = false,
+				}
+			elseif position == "Top right" then
+				return {
+					anchor = Vector2.new(0, 0),
+					start = UDim2.fromOffset(screenSize.X + 8, topY),
+					final = UDim2.fromOffset(screenSize.X - width - margin, topY),
+					exit = UDim2.fromOffset(screenSize.X + 8, topY),
+					width = width,
+					expands = false,
+				}
+			elseif position == "Bottom right" then
+				return {
+					anchor = Vector2.new(0, 0),
+					start = UDim2.fromOffset(screenSize.X + 8, bottomCornerY),
+					final = UDim2.fromOffset(screenSize.X - width - margin, bottomCornerY),
+					exit = UDim2.fromOffset(screenSize.X + 8, bottomCornerY),
+					width = width,
+					expands = false,
+					stacksUp = true,
+				}
+			elseif position == "Bottom left" then
+				return {
+					anchor = Vector2.new(0, 0),
+					start = UDim2.fromOffset(-width - 8, bottomCornerY),
+					final = UDim2.fromOffset(margin, bottomCornerY),
+					exit = UDim2.fromOffset(-width - 8, bottomCornerY),
+					width = width,
+					expands = false,
+					stacksUp = true,
+				}
+			end
+
+			-- "Top center" (also the fallback for a cleared/unknown position).
+			-- Starts just above the top edge and slides downward into place.
+			return {
+				anchor = Vector2.new(0.5, 0),
+				start = UDim2.fromOffset(centerX, topY - 16),
+				final = UDim2.fromOffset(centerX, topY),
+				exit = UDim2.fromOffset(centerX, topY),
+				width = width,
+				expands = true,
+			}
+		end
+
+		local function updateStackPositions(animate, skipRecord)
+			local step = NOTIFICATION_HEIGHT + NOTIFICATION_STACK_GAP
+			for index, record in ipairs(activeNotifications) do
+				local offset = (index - 1) * step
+				if record.base.stacksUp then
+					offset = -offset
+				end
+				record.finalPosition = shiftNotificationY(record.base.final, offset)
+				record.startPosition = shiftNotificationY(record.base.start, offset)
+				record.exitPosition = shiftNotificationY(record.base.exit, offset)
+				if animate and record ~= skipRecord and not record.leaving and record.panel.Parent then
+					local current = record.panel.Position
+					local target = record.finalPosition
+					-- Cards that already sit in their slot are left alone. Re-tweening
+					-- every card on every arrival was the source of the jitter when
+					-- several notifications were queued at once.
+					if math.abs(current.X.Offset - target.X.Offset) > 0.5
+						or math.abs(current.Y.Offset - target.Y.Offset) > 0.5
+					then
+						F.tween("notification_motion_" .. record.id, record.panel, NOTIFICATION_REFLOW_TIME, {
+							Position = target,
+						}, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+					else
+						record.panel.Position = target
+					end
+				end
+			end
+		end
+
+		local function removeActiveNotification(record)
+			local index = table.find(activeNotifications, record)
+			if index then
+				table.remove(activeNotifications, index)
+			end
+		end
+
+		local function dismissNotification(record)
+			if record.leaving then
+				return
+			end
+			record.leaving = true
+			record.token += 1
+			local token = record.token
+			removeActiveNotification(record)
+			updateStackPositions(true)
+
+			local exitTime = record.base.expands and NOTIFICATION_EXIT_TIME or NOTIFICATION_CORNER_EXIT_TIME
+			-- Fade and geometry share duration and easing so the card never appears to
+			-- dissolve faster than it collapses (which read as a two-step exit).
+			local fadeTween = F.tween("notification_fade_" .. record.id, record.panel, exitTime, {
+				GroupTransparency = 1,
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			if record.base.expands then
+				-- Center positions: both ends slide inward toward the middle.
+				F.tween("notification_size_" .. record.id, record.panel, exitTime, {
+					Size = UDim2.fromOffset(0, NOTIFICATION_HEIGHT),
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			else
+				-- Corner positions: reverse the entrance movement.
+				F.tween("notification_motion_" .. record.id, record.panel, exitTime, {
+					Position = record.exitPosition,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			end
+			fadeTween.Completed:Connect(function()
+				if record.token == token then
+					record.panel:Destroy()
+				end
+			end)
+		end
+
+		local function createNotificationRecord(text, position, layout)
+			notificationSerial += 1
+			local id = notificationSerial
+			local panel = F.create("CanvasGroup", notificationGui, {
+				Name = "Notification" .. id,
+				AnchorPoint = layout.anchor,
+				Position = layout.start,
+				Size = UDim2.fromOffset(
+					layout.expands and math.min(NOTIFICATION_START_WIDTH, layout.width) or layout.width,
+					NOTIFICATION_HEIGHT
+				),
+				BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+				BackgroundTransparency = 0.35,
+				BorderSizePixel = 0,
+				GroupTransparency = 1,
+				Visible = false,
+				ClipsDescendants = true,
+				ZIndex = 10000,
+			})
+			F.addCorner(panel, 5)
+
+			local label = F.makeText(
+				panel,
+				text,
+				UDim2.new(1, -24, 1, -2),
+				UDim2.fromOffset(12, 0),
+				13,
+				COLORS.White,
+				Enum.Font.GothamMedium
+			)
+			label.Name = "NotificationText"
+			label.TextWrapped = false
+			label.TextTruncate = Enum.TextTruncate.None
+			label.TextXAlignment = Enum.TextXAlignment.Center
+			label.TextYAlignment = Enum.TextYAlignment.Center
+			label.ZIndex = 10001
+			label.Active = false
+
+			-- Full-width white timer bar flush with the bottom edge. Center
+			-- notifications shrink it inward from both sides; corner notifications
+			-- keep it anchored to the left edge.
+			local bar = F.create("Frame", panel, {
+				Name = "TimeBar",
+				AnchorPoint = layout.expands and Vector2.new(0.5, 1) or Vector2.new(0, 1),
+				Position = layout.expands and UDim2.new(0.5, 0, 1, 0) or UDim2.new(0, 0, 1, 0),
+				Size = UDim2.new(1, 0, 0, 2),
+				BackgroundColor3 = COLORS.White,
+				BorderSizePixel = 0,
+				ZIndex = 10001,
+			})
+
+			return {
+				id = id,
+				panel = panel,
+				text = label,
+				bar = bar,
+				base = layout,
+				position = position,
+				leaving = false,
+				token = 0,
+				finalPosition = layout.final,
+				startPosition = layout.start,
+				exitPosition = layout.exit,
+			}
+		end
+
+		function F.setNotificationPosition(position)
+			if position then
+				notificationPosition = position
+			end
+		end
+
+		function F.getNotificationPosition()
+			return notificationPosition
+		end
+
+		function F.showNotification(text, position)
+			local screenSize = F.getSettingsViewport()
+			local chosenPosition = position or notificationPosition
+			local layout = notificationLayout(chosenPosition, screenSize)
+			local record = createNotificationRecord(text or "", chosenPosition, layout)
+			record.token += 1
+			local token = record.token
+			table.insert(activeNotifications, 1, record)
+			updateStackPositions(true, record)
+
+			local panel = record.panel
+			local corner = not layout.expands
+			local entryTime = corner and NOTIFICATION_CORNER_TIME or NOTIFICATION_ENTER_TIME
+			panel.AnchorPoint = layout.anchor
+			panel.Size = UDim2.fromOffset(
+				layout.expands and math.min(NOTIFICATION_START_WIDTH, layout.width) or layout.width,
+				NOTIFICATION_HEIGHT
+			)
+			panel.Position = record.startPosition
+			panel.GroupTransparency = 1
+			panel.Visible = true
+			record.text.Text = text or ""
+			record.bar.Size = UDim2.new(1, 0, 0, 2)
+
+			-- One timeline, started on one frame. Motion and width share duration and
+			-- easing, and fade-in finishes a little earlier so the card has weight by
+			-- the time it reaches its slot. Width keeps a separate tween key because
+			-- a stacking reflow retargets Position: sharing the key would cancel the
+			-- bloom halfway and freeze the card at a partial width.
+			F.tween(
+				"notification_motion_" .. record.id,
+				panel,
+				entryTime,
+				{ Position = record.finalPosition },
+				Enum.EasingStyle.Sine,
+				Enum.EasingDirection.Out
+			)
+			if layout.expands then
+				F.tween(
+					"notification_size_" .. record.id,
+					panel,
+					entryTime,
+					{ Size = UDim2.fromOffset(layout.width, NOTIFICATION_HEIGHT) },
+					Enum.EasingStyle.Sine,
+					Enum.EasingDirection.Out
+				)
+			end
+			F.tween(
+				"notification_fade_" .. record.id,
+				panel,
+				NOTIFICATION_FADE_TIME,
+				{ GroupTransparency = 0 },
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			)
+
+			task.delay(entryTime, function()
+				if record.leaving or record.token ~= token then
+					return
+				end
+				F.tween("notification_bar_" .. record.id, record.bar, NOTIFICATION_VISIBLE_TIME, {
+					Size = UDim2.new(0, 0, 0, 2),
+				}, Enum.EasingStyle.Linear)
+			end)
+			task.delay(entryTime + NOTIFICATION_VISIBLE_TIME, function()
+				if record.leaving or record.token ~= token then
+					return
+				end
+				dismissNotification(record)
+			end)
+		end
+	end
+
+	local function createFeatureToggle(parent, name, y, text, onChanged)
+		local row = F.create("TextButton", parent, {
+			Name = name,
+			Position = UDim2.fromOffset(0, y),
+			Size = UDim2.new(1, 0, 0, 30),
 			BackgroundColor3 = COLORS.SelectBg,
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
 			Text = "",
 			AutoButtonColor = false,
-			ZIndex = 5001,
+			Active = true,
+			ZIndex = 5,
 		})
-		F.addCorner(optionButton, 4)
+		F.addCorner(row, 5)
 
-		local optionLabel = F.makeText(
-			optionButton,
-			optionName,
-			UDim2.new(1, -12, 1, 0),
-			UDim2.fromOffset(8, 0),
+		local label = F.makeText(
+			row,
+			text,
+			UDim2.new(1, -66, 1, 0),
+			UDim2.fromOffset(0, 0),
 			13,
-			optionName == selected and COLORS.Accent or COLORS.TabIdle,
+			COLORS.TabIdle,
 			Enum.Font.GothamMedium
 		)
-		optionLabel.Name = "OptionLabel"
-		optionLabel.TextTruncate = Enum.TextTruncate.None
-		optionLabel.ZIndex = 5002
-		optionLabel.Active = false
+		label.Name = "ToggleLabel"
+		label.ZIndex = 6
+		label.Active = false
 
-		optionButton.MouseEnter:Connect(function()
-			F.tween(name .. "_opt_text_" .. index, optionLabel, 0.12, {
-				Position = UDim2.fromOffset(12, 0),
-				TextColor3 = optionName == selected and COLORS.Accent or COLORS.White,
+		local track = F.create("Frame", row, {
+			Name = "ToggleTrack",
+			Position = UDim2.new(1, -(36 + CONFIG.spacing), 0.5, -10),
+			Size = UDim2.fromOffset(36, 20),
+			BackgroundColor3 = Color3.fromRGB(57, 57, 64),
+			BorderSizePixel = 0,
+			ZIndex = 6,
+		})
+		F.addCorner(track, 10)
+
+		local knob = F.create("Frame", track, {
+			Name = "ToggleKnob",
+			Position = UDim2.fromOffset(3, 3),
+			Size = UDim2.fromOffset(14, 14),
+			BackgroundColor3 = Color3.fromRGB(190, 190, 198),
+			BorderSizePixel = 0,
+			ZIndex = 7,
+		})
+		F.addCorner(knob, 7)
+
+		local toggleState = { enabled = false }
+
+		local function setEnabled(enabled)
+			toggleState.enabled = enabled
+			F.tween("feature_toggle_track_" .. name, track, 0.18, {
+				BackgroundColor3 = enabled and COLORS.Accent or Color3.fromRGB(57, 57, 64),
 			})
-			F.tween(name .. "_opt_bg_" .. index, optionButton, 0.12, {
-				BackgroundTransparency = 0.35,
+			F.tween("feature_toggle_knob_" .. name, knob, 0.18, {
+				Position = enabled and UDim2.new(1, -17, 0, 3) or UDim2.fromOffset(3, 3),
+				BackgroundColor3 = enabled and Color3.fromRGB(245, 249, 255) or Color3.fromRGB(190, 190, 198),
 			})
+			if onChanged then
+				onChanged(enabled)
+			end
+		end
+
+		row.MouseEnter:Connect(function()
+			F.setToggleHover(true, row, label)
+		end)
+		row.MouseLeave:Connect(function()
+			F.setToggleHover(false, row, label)
+		end)
+		row.Activated:Connect(function()
+			setEnabled(not toggleState.enabled)
 		end)
 
-		optionButton.MouseLeave:Connect(function()
-			F.tween(name .. "_opt_text_" .. index, optionLabel, 0.12, {
-				Position = UDim2.fromOffset(8, 0),
-				TextColor3 = optionName == selected and COLORS.Accent or COLORS.TabIdle,
+		toggleState.setEnabled = setEnabled
+		toggleState.row = row
+		toggleState.label = label
+		return toggleState
+	end
+
+	-- Plain button matching the dropdown-button styling. Text sits inside the
+	-- button and is centered by default; pass `alignment` to override per button.
+	-- `size` is optional so the button can live inside a "dividecut" row.
+	local function createFeatureButton(parent, name, y, text, alignment, size)
+		local button = F.create("TextButton", parent, {
+			Name = name,
+			Position = UDim2.fromOffset(0, y),
+			Size = size or UDim2.new(1, 0, 0, 28),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 7,
+		})
+
+		-- The visual layer is anchored at its center, so the press animation
+		-- (UIScale) shrinks/grows evenly around the middle of the button instead
+		-- of pulling toward the top-left corner.
+		local visual = F.create("Frame", button, {
+			Name = "ButtonVisual",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = Color3.fromRGB(43, 43, 49),
+			BorderSizePixel = 0,
+			ZIndex = 7,
+		})
+		F.addCorner(visual, 5)
+
+		local uiScale = F.create("UIScale", visual, {
+			Name = "PressScale",
+			Scale = 1,
+		})
+
+		local label = F.makeText(
+			visual,
+			text,
+			UDim2.new(1, -(CONFIG.spacing * 2), 1, 0),
+			UDim2.fromOffset(CONFIG.spacing, 0),
+			13,
+			COLORS.TabIdle,
+			Enum.Font.GothamMedium
+		)
+		label.Name = "ButtonText"
+		label.TextXAlignment = alignment or CONFIG.BUTTON_TEXT_ALIGNMENT
+		label.ZIndex = 8
+		label.Active = false
+
+		local hovered = false
+		local pressed = false
+
+		local function applyVisuals(duration)
+			local backgroundColor = Color3.fromRGB(43, 43, 49)
+			if pressed then
+				backgroundColor = CONFIG.BUTTON_PRESS_COLOR
+			elseif hovered then
+				backgroundColor = Color3.fromRGB(51, 51, 58)
+			end
+			local textColor = (hovered or pressed) and COLORS.White or COLORS.TabIdle
+			F.tween(name .. "_bg", visual, duration, {
+				BackgroundColor3 = backgroundColor,
 			})
-			F.tween(name .. "_opt_bg_" .. index, optionButton, 0.12, {
-				BackgroundTransparency = 1,
+			F.tween(name .. "_text", label, duration, {
+				TextColor3 = textColor,
 			})
+			F.tween(name .. "_scale", uiScale, duration, {
+				Scale = pressed and CONFIG.BUTTON_PRESS_SCALE or 1,
+			})
+		end
+
+		local function setHover(isHovered)
+			hovered = isHovered
+			applyVisuals(0.12)
+		end
+
+		local function setPressed(isPressed)
+			pressed = isPressed
+			-- Snappier response on press, softer spring back on release.
+			applyVisuals(isPressed and 0.06 or 0.12)
+		end
+
+		button.MouseEnter:Connect(function()
+			setHover(true)
+		end)
+		button.MouseLeave:Connect(function()
+			-- Releasing outside the button must not leave it stuck in the pressed look.
+			if pressed then
+				setPressed(false)
+			end
+			setHover(false)
+		end)
+		button.MouseButton1Down:Connect(function()
+			setPressed(true)
+		end)
+		button.MouseButton1Up:Connect(function()
+			setPressed(false)
 		end)
 
-		optionButton.Activated:Connect(function()
-			selected = optionName
-			buttonText.Text = optionName
-			refreshOptionColors()
-			close()
-			if onSelect then
-				onSelect(optionName)
+		-- If the pointer is released off the button, MouseButton1Up may not fire.
+		SERVICES.UserInputService.InputEnded:Connect(function(input)
+			if not pressed then
+				return
+			end
+			if
+				input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch
+			then
+				setPressed(false)
 			end
 		end)
 
-		optionButtons[optionName] = optionButton
+		return {
+			button = button,
+			label = label,
+			setText = function(newText)
+				label.Text = newText
+			end,
+			setAlignment = function(newAlignment)
+				label.TextXAlignment = newAlignment
+			end,
+		}
 	end
 
-	button.MouseEnter:Connect(function()
-		if not isOpen then
-			F.tween(name .. "_text", buttonText, 0.12, {
-				TextColor3 = COLORS.White,
+	-- "dividecut": splits one full-width row evenly between any number of feature
+	-- buttons, keeping CONFIG.spacing between them. Buttons can be added up front
+	-- or later with addButton(); widths are recalculated on every add.
+	local function createFeatureButtonRow(parent, name, y)
+		local row = F.create("Frame", parent, {
+			Name = name,
+			Position = UDim2.fromOffset(0, y),
+			Size = UDim2.new(1, 0, 0, 28),
+			BackgroundTransparency = 1,
+			ZIndex = 7,
+		})
+		F.create("UIListLayout", row, {
+			Name = "DivideCutLayout",
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, CONFIG.spacing),
+		})
+
+		local created = {}
+
+		local function applyWidths()
+			local count = #created
+			if count == 0 then
+				return
+			end
+			local totalGap = CONFIG.spacing * (count - 1)
+			local widthScale = 1 / count
+			local widthOffset = -(totalGap / count)
+			for index, entry in ipairs(created) do
+				entry.button.Size = UDim2.new(widthScale, widthOffset, 0, 28)
+				entry.button.LayoutOrder = index
+			end
+		end
+
+		local function addButton(text, alignment)
+			local entry = createFeatureButton(
+				row,
+				name .. "Button" .. (#created + 1),
+				0,
+				text,
+				alignment,
+				UDim2.new(1, 0, 0, 28)
+			)
+			created[#created + 1] = entry
+			applyWidths()
+			return entry
+		end
+
+		return {
+			row = row,
+			buttons = created,
+			addButton = addButton,
+		}
+	end
+
+	local function createFeatureSlider(parent, name, title, minValue, maxValue, defaultValue)
+		local minV = math.min(minValue, maxValue)
+		local maxV = math.max(minValue, maxValue)
+		local value = math.clamp(defaultValue, minV, maxV)
+		local dragging = false
+		local inputWidth = 46
+		local trackWidthOffset = inputWidth + CONFIG.spacing * 3
+
+		local titleLabel = F.makeText(
+			parent,
+			title,
+			UDim2.new(1, -(CONFIG.spacing + 46 + CONFIG.spacing), 0, 18),
+			UDim2.fromOffset(0, 0),
+			13,
+			COLORS.TabIdle,
+			Enum.Font.GothamMedium
+		)
+		titleLabel.Name = name .. "Title"
+		titleLabel.ZIndex = 6
+
+		local valueLabel = F.makeText(
+			parent,
+			"",
+			UDim2.fromOffset(46, 18),
+			UDim2.new(1, -CONFIG.spacing, 0, 0),
+			12,
+			COLORS.TabIdle,
+			Enum.Font.GothamMedium
+		)
+		valueLabel.Name = name .. "Value"
+		valueLabel.AnchorPoint = Vector2.new(1, 0)
+		valueLabel.TextXAlignment = Enum.TextXAlignment.Center
+		valueLabel.ZIndex = 6
+
+		local hitArea = F.create("TextButton", parent, {
+			Name = name .. "HitArea",
+			Position = UDim2.fromOffset(0, 18),
+			Size = UDim2.new(1, -trackWidthOffset, 0, 30),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			Active = true,
+			ZIndex = 9,
+		})
+
+		local track = F.create("Frame", parent, {
+			Name = name .. "Track",
+			Position = UDim2.fromOffset(0, 31),
+			Size = UDim2.new(1, -trackWidthOffset, 0, 4),
+			BackgroundColor3 = Color3.fromRGB(55, 55, 62),
+			BorderSizePixel = 0,
+			ZIndex = 6,
+		})
+		F.addCorner(track, 3)
+
+		local trackStroke = F.create("UIStroke", track, {
+			Color = COLORS.Accent,
+			Thickness = 1,
+			Transparency = 1,
+		})
+
+		local fill = F.create("Frame", track, {
+			Name = "SliderFill",
+			Size = UDim2.new(0, 0, 1, 0),
+			BackgroundColor3 = COLORS.Accent,
+			BorderSizePixel = 0,
+			ZIndex = 7,
+		})
+		F.addCorner(fill, 3)
+
+		local knob = F.create("Frame", track, {
+			Name = "SliderKnob",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0, 0, 0.5, 0),
+			Size = UDim2.fromOffset(12, 12),
+			BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+			BorderSizePixel = 0,
+			ZIndex = 8,
+		})
+		F.addCorner(knob, 6)
+
+		local input = F.create("TextBox", parent, {
+			Name = name .. "Input",
+			Position = UDim2.new(1, -(CONFIG.spacing + inputWidth), 0, 20),
+			Size = UDim2.fromOffset(inputWidth, 24),
+			BackgroundColor3 = Color3.fromRGB(39, 39, 45),
+			BorderSizePixel = 0,
+			Text = "",
+			PlaceholderText = "0",
+			PlaceholderColor3 = COLORS.Muted,
+			TextColor3 = COLORS.Title,
+			TextSize = 12,
+			Font = Enum.Font.GothamMedium,
+			ClearTextOnFocus = false,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			ZIndex = 7,
+		})
+		F.addCorner(input, 5)
+		F.addStroke(input)
+
+		input.MouseEnter:Connect(function()
+			F.tween(name .. "_input_hover", input, 0.13, {
+				BackgroundColor3 = Color3.fromRGB(48, 48, 56),
 			})
-			F.tween(name .. "_bg", button, 0.12, {
-				BackgroundColor3 = Color3.fromRGB(51, 51, 58),
+		end)
+
+		input.MouseLeave:Connect(function()
+			F.tween(name .. "_input_hover", input, 0.13, {
+				BackgroundColor3 = Color3.fromRGB(39, 39, 45),
+			})
+		end)
+
+		local function formatValue(number)
+			return string.format("%d", math.floor(number + 0.5))
+		end
+
+		local function setValue(newValue, updateInput)
+			newValue = math.clamp(math.floor(newValue + 0.5), minV, maxV)
+			value = newValue
+			local alpha = (maxV == minV) and 0 or (newValue - minV) / (maxV - minV)
+			F.tween(name .. "_fill", fill, 0.13, {
+				Size = UDim2.new(alpha, 0, 1, 0),
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			F.tween(name .. "_knob", knob, 0.13, {
+				Position = UDim2.new(alpha, 0, 0.5, 0),
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			valueLabel.Text = formatValue(newValue)
+			if updateInput then
+				input.Text = formatValue(newValue)
+			end
+		end
+
+		local function setFromPointer(screenX)
+			local trackPosition = track.AbsolutePosition.X
+			local trackWidth = math.max(track.AbsoluteSize.X, 1)
+			local alpha = math.clamp((screenX - trackPosition) / trackWidth, 0, 1)
+			setValue(minV + (maxV - minV) * alpha, true)
+		end
+
+		local function setHover(hovered)
+			F.tween(name .. "_track_hover", track, 0.14, {
+				BackgroundColor3 = hovered and Color3.fromRGB(72, 72, 82) or Color3.fromRGB(55, 55, 62),
+			})
+			F.tween(name .. "_stroke_hover", trackStroke, 0.14, {
+				Transparency = hovered and 0.45 or 1,
+			})
+			F.tween(name .. "_knob_hover", knob, 0.14, {
+				Size = hovered and UDim2.fromOffset(14, 14) or UDim2.fromOffset(12, 12),
+			})
+			F.tween(name .. "_fill_hover", fill, 0.14, {
+				BackgroundColor3 = hovered and Color3.fromRGB(105, 195, 255) or COLORS.Accent,
 			})
 		end
-	end)
 
-	button.MouseLeave:Connect(function()
-		if not isOpen then
+		local function pointerInsideHitArea(inputObject)
+			local point = getPointerPosition(inputObject)
+			local position = hitArea.AbsolutePosition
+			local size = hitArea.AbsoluteSize
+			return point.X >= position.X and point.X <= position.X + size.X
+				and point.Y >= position.Y and point.Y <= position.Y + size.Y
+		end
+
+		hitArea.InputBegan:Connect(function(inputObject)
+			local inputType = inputObject.UserInputType
+			if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
+				return
+			end
+			dragging = true
+			setHover(true)
+			setFromPointer(getPointerPosition(inputObject).X)
+		end)
+
+		hitArea.MouseEnter:Connect(function()
+			setHover(true)
+		end)
+
+		hitArea.MouseLeave:Connect(function()
+			if not dragging then
+				setHover(false)
+			end
+		end)
+
+		SERVICES.UserInputService.InputChanged:Connect(function(inputObject)
+			if not dragging then
+				return
+			end
+			if inputObject.UserInputType == Enum.UserInputType.MouseMovement
+				or inputObject.UserInputType == Enum.UserInputType.Touch then
+				setFromPointer(getPointerPosition(inputObject).X)
+			end
+		end)
+
+		SERVICES.UserInputService.InputEnded:Connect(function(inputObject)
+			if inputObject.UserInputType == Enum.UserInputType.MouseButton1
+				or inputObject.UserInputType == Enum.UserInputType.Touch then
+				dragging = false
+				setHover(pointerInsideHitArea(inputObject))
+			end
+		end)
+
+		input.FocusLost:Connect(function()
+			local typedValue = tonumber(input.Text)
+			if typedValue then
+				setValue(typedValue, true)
+			else
+				input.Text = formatValue(value)
+			end
+		end)
+
+		setValue(value, true)
+
+		return {
+			setValue = setValue,
+			getValue = function()
+				return value
+			end,
+		}
+	end
+
+	local featureDropdownOpen = nil
+
+	function F.closeFeatureDropdowns()
+		local current = featureDropdownOpen
+		if current then
+			current.close()
+		end
+	end
+
+	local function createFeatureDropdown(parent, name, y, options, defaultOption, onSelect)
+		local selected = defaultOption
+		local isOpen = false
+
+		local button = F.create("TextButton", parent, {
+			Name = name .. "Button",
+			Position = UDim2.fromOffset(0, y),
+			Size = UDim2.new(1, 0, 0, 28),
+			BackgroundColor3 = Color3.fromRGB(43, 43, 49),
+			BorderSizePixel = 0,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 7,
+		})
+		F.addCorner(button, 5)
+
+		local buttonText = F.makeText(
+			button,
+			selected,
+			UDim2.new(1, -34, 1, 0),
+			UDim2.fromOffset(9, 0),
+			13,
+			COLORS.TabIdle,
+			Enum.Font.GothamMedium
+		)
+		buttonText.Name = "DropdownText"
+		buttonText.TextTruncate = Enum.TextTruncate.None
+		buttonText.ZIndex = 8
+		buttonText.Active = false
+
+		local function makeChevron(chevronName, positionOffset, rotation)
+			return F.create("Frame", button, {
+				Name = chevronName,
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.new(1, positionOffset, 0.5, -1),
+				Size = UDim2.fromOffset(6, 1.5),
+				Rotation = rotation,
+				BackgroundColor3 = COLORS.Icon,
+				BorderSizePixel = 0,
+				ZIndex = 8,
+			})
+		end
+
+		local chevronLeft = makeChevron("ChevronLeft", -17, 42)
+		local chevronRight = makeChevron("ChevronRight", -13, -42)
+
+		local popup = F.create("CanvasGroup", Root, {
+			Name = name .. "Options",
+			Position = UDim2.fromOffset(0, 0),
+			Size = UDim2.fromOffset(160, 8),
+			BackgroundColor3 = Color3.fromRGB(21, 21, 25),
+			BorderSizePixel = 0,
+			GroupTransparency = 1,
+			Visible = false,
+			ClipsDescendants = true,
+			ZIndex = 5000,
+		})
+		F.addCorner(popup, 5)
+		F.addStroke(popup)
+
+		local popupTargetWidth = 160
+		local popupTargetHeight = 8 + #options * 24
+		local popupAnimHeight = F.create("NumberValue", popup, {
+			Name = "AnimHeight",
+			Value = 0,
+		})
+		local popupRevision = 0
+
+		local function applyPopupLayout()
+			popup.Size = UDim2.fromOffset(popupTargetWidth, math.max(popupAnimHeight.Value, 0))
+		end
+
+		popupAnimHeight.Changed:Connect(applyPopupLayout)
+
+		local optionButtons = {}
+
+		local function refreshOptionColors()
+			for optionName, optionButton in pairs(optionButtons) do
+				local optionLabel = optionButton:FindFirstChild("OptionLabel")
+				if optionLabel then
+					optionLabel.TextColor3 = optionName == selected and COLORS.Accent or COLORS.TabIdle
+				end
+			end
+		end
+
+		local function positionPopup()
+			local buttonPosition = button.AbsolutePosition
+			local buttonSize = button.AbsoluteSize
+			local rootOrigin = Root.AbsolutePosition
+			local rootSize = Root.AbsoluteSize
+			if rootSize.X <= 0 or rootSize.Y <= 0 then
+				local currentCamera = workspace.CurrentCamera
+				rootSize = currentCamera and currentCamera.ViewportSize or Vector2.new(1280, 720)
+			end
+			local popupWidth = math.min(math.max(buttonSize.X, 260), math.max(48, rootSize.X - 16))
+			local x = buttonPosition.X - rootOrigin.X
+			local y = buttonPosition.Y - rootOrigin.Y + buttonSize.Y + 4
+			x = math.clamp(x, 8, math.max(8, rootSize.X - popupWidth - 8))
+			if y + popupTargetHeight > rootSize.Y - 8 then
+				y = math.max(8, buttonPosition.Y - rootOrigin.Y - popupTargetHeight - 4)
+			end
+			popupTargetWidth = popupWidth
+			popup.Position = UDim2.fromOffset(x, y)
+			applyPopupLayout()
+		end
+
+		local api
+
+		local function close()
+			if not isOpen then
+				return
+			end
+			isOpen = false
+			popupRevision += 1
+			local revision = popupRevision
+			if featureDropdownOpen == api then
+				featureDropdownOpen = nil
+			end
+			local fadeTween = F.tween(name .. "_popup_fade", popup, 0.12, {
+				GroupTransparency = 1,
+			})
+			F.tween(name .. "_popup_collapse", popupAnimHeight, 0.14, {
+				Value = 0,
+			}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			fadeTween.Completed:Connect(function()
+				if popupRevision == revision and not isOpen then
+					popup.Visible = false
+				end
+			end)
+			F.tween(name .. "_chevron_left", chevronLeft, 0.14, {
+				Rotation = 42,
+				BackgroundColor3 = COLORS.Icon,
+			})
+			F.tween(name .. "_chevron_right", chevronRight, 0.14, {
+				Rotation = -42,
+				BackgroundColor3 = COLORS.Icon,
+			})
 			F.tween(name .. "_text", buttonText, 0.12, {
 				TextColor3 = COLORS.TabIdle,
 			})
@@ -4706,386 +7026,802 @@ local function createFeatureDropdown(parent, name, y, options, defaultOption, on
 				BackgroundColor3 = Color3.fromRGB(43, 43, 49),
 			})
 		end
-	end)
 
-	button.Activated:Connect(function()
-		if isOpen then
-			close()
-		else
-			open()
+		local function open()
+			if isOpen then
+				return
+			end
+			F.closeFeatureDropdowns()
+			featureDropdownOpen = api
+			isOpen = true
+			popupRevision += 1
+			refreshOptionColors()
+			popupAnimHeight.Value = 0
+			positionPopup()
+			popup.Visible = true
+			popup.GroupTransparency = 1
+			popup.Size = UDim2.fromOffset(popupTargetWidth, 0)
+			F.tween(name .. "_popup_fade", popup, 0.12, {
+				GroupTransparency = 0,
+			})
+			F.tween(name .. "_popup_expand", popupAnimHeight, 0.18, {
+				Value = popupTargetHeight,
+			}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+			F.tween(name .. "_chevron_left", chevronLeft, 0.14, {
+				Rotation = -42,
+				BackgroundColor3 = COLORS.White,
+			})
+			F.tween(name .. "_chevron_right", chevronRight, 0.14, {
+				Rotation = 42,
+				BackgroundColor3 = COLORS.White,
+			})
+			F.tween(name .. "_text", buttonText, 0.12, {
+				TextColor3 = COLORS.White,
+			})
+			F.tween(name .. "_bg", button, 0.12, {
+				BackgroundColor3 = Color3.fromRGB(51, 51, 58),
+			})
+		end
+
+		api = {
+			close = close,
+			refresh = function()
+				if isOpen then
+					positionPopup()
+				end
+			end,
+			button = button,
+			popup = popup,
+			isOpen = function()
+				return isOpen
+			end,
+			getSelected = function()
+				return selected
+			end,
+		}
+
+		for index, optionName in ipairs(options) do
+			local optionButton = F.create("TextButton", popup, {
+				Name = "Option_" .. string.gsub(optionName, "[%s%.!%-]", "_"),
+				Position = UDim2.fromOffset(4, 4 + (index - 1) * 24),
+				Size = UDim2.new(1, -8, 0, 22),
+				BackgroundColor3 = COLORS.SelectBg,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+				ZIndex = 5001,
+			})
+			F.addCorner(optionButton, 4)
+
+			local optionLabel = F.makeText(
+				optionButton,
+				optionName,
+				UDim2.new(1, -12, 1, 0),
+				UDim2.fromOffset(8, 0),
+				13,
+				optionName == selected and COLORS.Accent or COLORS.TabIdle,
+				Enum.Font.GothamMedium
+			)
+			optionLabel.Name = "OptionLabel"
+			optionLabel.TextTruncate = Enum.TextTruncate.None
+			optionLabel.ZIndex = 5002
+			optionLabel.Active = false
+
+			optionButton.MouseEnter:Connect(function()
+				F.tween(name .. "_opt_text_" .. index, optionLabel, 0.12, {
+					Position = UDim2.fromOffset(12, 0),
+					TextColor3 = optionName == selected and COLORS.Accent or COLORS.White,
+				})
+				F.tween(name .. "_opt_bg_" .. index, optionButton, 0.12, {
+					BackgroundTransparency = 0.35,
+				})
+			end)
+
+			optionButton.MouseLeave:Connect(function()
+				F.tween(name .. "_opt_text_" .. index, optionLabel, 0.12, {
+					Position = UDim2.fromOffset(8, 0),
+					TextColor3 = optionName == selected and COLORS.Accent or COLORS.TabIdle,
+				})
+				F.tween(name .. "_opt_bg_" .. index, optionButton, 0.12, {
+					BackgroundTransparency = 1,
+				})
+			end)
+
+			optionButton.Activated:Connect(function()
+				-- Clicking the selected option again clears the selection.
+				if selected == optionName then
+					selected = nil
+					buttonText.Text = "--"
+				else
+					selected = optionName
+					buttonText.Text = optionName
+				end
+				refreshOptionColors()
+				close()
+				if onSelect then
+					onSelect(selected)
+				end
+			end)
+
+			optionButtons[optionName] = optionButton
+		end
+
+		button.MouseEnter:Connect(function()
+			if not isOpen then
+				F.tween(name .. "_text", buttonText, 0.12, {
+					TextColor3 = COLORS.White,
+				})
+				F.tween(name .. "_bg", button, 0.12, {
+					BackgroundColor3 = Color3.fromRGB(51, 51, 58),
+				})
+			end
+		end)
+
+		button.MouseLeave:Connect(function()
+			if not isOpen then
+				F.tween(name .. "_text", buttonText, 0.12, {
+					TextColor3 = COLORS.TabIdle,
+				})
+				F.tween(name .. "_bg", button, 0.12, {
+					BackgroundColor3 = Color3.fromRGB(43, 43, 49),
+				})
+			end
+		end)
+
+		button.Activated:Connect(function()
+			if isOpen then
+				close()
+			else
+				open()
+			end
+		end)
+
+		return api
+	end
+
+	SERVICES.UserInputService.InputBegan:Connect(function(inputObject)
+		if not featureDropdownOpen then
+			return
+		end
+		local inputType = inputObject.UserInputType
+		if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		local point = getPointerPosition(inputObject)
+		local function inside(guiObject)
+			local position = guiObject.AbsolutePosition
+			local size = guiObject.AbsoluteSize
+			return point.X >= position.X and point.X <= position.X + size.X
+				and point.Y >= position.Y and point.Y <= position.Y + size.Y
+		end
+		local current = featureDropdownOpen
+		if not inside(current.popup) and not inside(current.button) then
+			current.close()
 		end
 	end)
 
-	return api
-end
+	SERVICES.RunService.RenderStepped:Connect(function()
+		if featureDropdownOpen then
+			featureDropdownOpen.refresh()
+		end
+	end)
 
-SERVICES.UserInputService.InputBegan:Connect(function(inputObject)
-	if not featureDropdownOpen then
-		return
-	end
-	local inputType = inputObject.UserInputType
-	if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
-		return
-	end
-	local point = getPointerPosition(inputObject)
-	local function inside(guiObject)
-		local position = guiObject.AbsolutePosition
-		local size = guiObject.AbsoluteSize
-		return point.X >= position.X and point.X <= position.X + size.X
-			and point.Y >= position.Y and point.Y <= position.Y + size.Y
-	end
-	local current = featureDropdownOpen
-	if not inside(current.popup) and not inside(current.button) then
-		current.close()
-	end
-end)
+	local conditionalDropdownBlock = F.create("CanvasGroup", featuresContent, {
+		Name = "ConditionalDropdownBlock",
+		Position = UDim2.fromOffset(0, 36),
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 5,
+	})
 
-SERVICES.RunService.RenderStepped:Connect(function()
-	if featureDropdownOpen then
-		featureDropdownOpen.refresh()
-	end
-end)
+	createFeatureToggle(featuresContent, "ConditionalGroupsToggle", 0, "conditional groups!", function(enabled)
+		conditionalDropdownShown = enabled
+		setRevealed("conditional_groups_dropdown", conditionalDropdownBlock, enabled)
+		if not enabled then
+			F.closeFeatureDropdowns()
+		end
+		F.refreshGroupHeight()
+		F.showNotification("This is a notification, hello!")
+	end)
 
-local conditionalDropdownBlock = F.create("CanvasGroup", featuresContent, {
-	Name = "ConditionalDropdownBlock",
-	Position = UDim2.fromOffset(0, 36),
-	Size = UDim2.new(1, 0, 0, 28),
-	BackgroundTransparency = 1,
-	GroupTransparency = 1,
-	BorderSizePixel = 0,
-	Visible = false,
-	ZIndex = 5,
-})
+	local conditionalDropdown = createFeatureDropdown(
+		conditionalDropdownBlock,
+		"ConditionalDropdown",
+		0,
+		{"i appeared now!", "this is a conditional group dropdown."},
+		"i appeared now!"
+	)
 
-createFeatureToggle(featuresContent, "ConditionalGroupsToggle", 0, "conditional groups!", function(enabled)
-	conditionalDropdownShown = enabled
-	setRevealed("conditional_groups_dropdown", conditionalDropdownBlock, enabled)
-	if not enabled then
+	local sliderBlock = F.create("CanvasGroup", containerContent, {
+		Name = "ImNowShownBlock",
+		Position = UDim2.fromOffset(0, 36),
+		Size = UDim2.new(1, 0, 0, 48),
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 5,
+	})
+
+	local containerDropdown
+	local helloBlock
+
+	createFeatureToggle(containerContent, "AnotherToggle", 0, "this is another toggle", function(enabled)
+		sliderShown = enabled
+		setRevealed("im_now_shown_slider", sliderBlock, enabled)
+		local sliderOffset = enabled and 54 or 0
+		if containerDropdown then
+			F.tween("feature_container_dropdown_pos", containerDropdown.button, 0.22, {
+				Position = UDim2.fromOffset(0, 36 + sliderOffset),
+			}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		end
+		if helloBlock then
+			F.tween("feature_container_hello_pos", helloBlock, 0.22, {
+				Position = UDim2.fromOffset(0, 70 + sliderOffset),
+			}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		end
+		F.refreshGroupHeight()
+		F.showNotification("This is a notification, hello!")
+	end)
+
+	createFeatureSlider(sliderBlock, "ImNowShownSlider", "im now shown!", 0, 100, 40)
+
+	containerDropdown = createFeatureDropdown(
+		containerContent,
+		"ContainerDropdown",
+		36,
+		{"alfa", "charlie", "delta", "zulu", "x-ray", "select me!"},
+		"delta",
+		function(optionName)
+			helloShown = optionName == "select me!"
+			setRevealed("container_hello_toggle", helloBlock, helloShown)
+			F.refreshGroupHeight()
+		end
+	)
+
+	helloBlock = F.create("CanvasGroup", containerContent, {
+		Name = "HelloToggleBlock",
+		Position = UDim2.fromOffset(0, 70),
+		Size = UDim2.new(1, 0, 0, 30),
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 5,
+	})
+
+	createFeatureToggle(helloBlock, "HelloFeatureToggle", 0, "hello!")
+
+	local function setGroupTab(which)
+		currentGroupTab = which
+		local isFeatures = which == "features"
+		F.setHeaderTabColor(featuresHeaderTab, isFeatures and COLORS.Accent or COLORS.TabIdle)
+		F.setHeaderTabColor(containerHeaderTab, isFeatures and COLORS.TabIdle or COLORS.Accent)
+		featuresContent.Visible = isFeatures
+		containerContent.Visible = not isFeatures
 		F.closeFeatureDropdowns()
-	end
-	F.refreshGroupHeight()
-end)
-
-local conditionalDropdown = createFeatureDropdown(
-	conditionalDropdownBlock,
-	"ConditionalDropdown",
-	0,
-	{"i appeared now!", "this is a conditional group dropdown."},
-	"i appeared now!"
-)
-
-local sliderBlock = F.create("CanvasGroup", containerContent, {
-	Name = "ImNowShownBlock",
-	Position = UDim2.fromOffset(0, 36),
-	Size = UDim2.new(1, 0, 0, 48),
-	BackgroundTransparency = 1,
-	GroupTransparency = 1,
-	BorderSizePixel = 0,
-	Visible = false,
-	ZIndex = 5,
-})
-
-local containerDropdown
-local helloBlock
-
-createFeatureToggle(containerContent, "AnotherToggle", 0, "this is another toggle", function(enabled)
-	sliderShown = enabled
-	setRevealed("im_now_shown_slider", sliderBlock, enabled)
-	local sliderOffset = enabled and 54 or 0
-	if containerDropdown then
-		F.tween("feature_container_dropdown_pos", containerDropdown.button, 0.22, {
-			Position = UDim2.fromOffset(0, 36 + sliderOffset),
-		}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-	end
-	if helloBlock then
-		F.tween("feature_container_hello_pos", helloBlock, 0.22, {
-			Position = UDim2.fromOffset(0, 70 + sliderOffset),
-		}, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-	end
-	F.refreshGroupHeight()
-end)
-
-createFeatureSlider(sliderBlock, "ImNowShownSlider", "im now shown!", 0, 100, 40)
-
-containerDropdown = createFeatureDropdown(
-	containerContent,
-	"ContainerDropdown",
-	36,
-	{"alfa", "charlie", "delta", "zulu", "x-ray", "select me!"},
-	"delta",
-	function(optionName)
-		helloShown = optionName == "select me!"
-		setRevealed("container_hello_toggle", helloBlock, helloShown)
 		F.refreshGroupHeight()
 	end
-)
 
-helloBlock = F.create("CanvasGroup", containerContent, {
-	Name = "HelloToggleBlock",
-	Position = UDim2.fromOffset(0, 70),
-	Size = UDim2.new(1, 0, 0, 30),
-	BackgroundTransparency = 1,
-	GroupTransparency = 1,
-	BorderSizePixel = 0,
-	Visible = false,
-	ZIndex = 5,
-})
+	featuresHeaderTab.Activated:Connect(function()
+		setGroupTab("features")
+	end)
 
-createFeatureToggle(helloBlock, "HelloFeatureToggle", 0, "hello!")
+	containerHeaderTab.Activated:Connect(function()
+		setGroupTab("containertab!")
+	end)
 
-local function setGroupTab(which)
-	currentGroupTab = which
-	local isFeatures = which == "features"
-	featuresHeaderTab.TextColor3 = isFeatures and COLORS.Accent or COLORS.TabIdle
-	containerHeaderTab.TextColor3 = isFeatures and COLORS.TabIdle or COLORS.Accent
-	featuresContent.Visible = isFeatures
-	containerContent.Visible = not isFeatures
-	F.closeFeatureDropdowns()
-	F.refreshGroupHeight()
-end
+	-- Search-result navigation. Defined here because it needs the feature page's
+	-- internals (including the "containertab!" group tab) to reveal the match.
+	function F.navigateToSearchResult(target)
+		if not target or not target.Parent then
+			return
+		end
+		if target:IsDescendantOf(otherFeaturesPage) then
+			F.setTabSelected(newFeaturesTab)
+			if target:IsDescendantOf(containerContent) then
+				setGroupTab("containertab!")
+			else
+				setGroupTab("features")
+			end
+		else
+			F.setTabSelected(legitTab)
+		end
+		-- Open any collapsed group box around the match so the highlight is
+		-- actually visible after jumping to it.
+		local ancestor = target.Parent
+		while ancestor and ancestor ~= contentBody do
+			if ancestor:IsA("GuiObject") then
+				F.setGroupBoxCollapsed(ancestor, false, true)
+			end
+			ancestor = ancestor.Parent
+		end
+		F.highlightSearchTarget(target)
+	end
 
-featuresHeaderTab.Activated:Connect(function()
+	function F.highlightSearchTarget(target)
+		if not target or not target.Parent then
+			return
+		end
+		-- Per-target revision + tween key so jumping between results quickly
+		-- restores every previous match instead of leaving it highlighted.
+		local revision = (target:GetAttribute("MidnightSearchRevision") or 0) + 1
+		target:SetAttribute("MidnightSearchRevision", revision)
+		local originalColor = target.TextColor3
+		local key = "search_target_highlight_" .. tostring(target)
+		F.tween(key, target, 0.12, {
+			TextColor3 = COLORS.Accent,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		task.delay(0.65, function()
+			if target.Parent and target:GetAttribute("MidnightSearchRevision") == revision then
+				F.tween(key, target, 0.3, {
+					TextColor3 = originalColor,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+			end
+		end)
+
+		-- Also light up the group box that holds the match, so jumping to a small
+		-- label is obvious at a glance.
+		local group = target.Parent
+		while group and group ~= contentBody
+			and not group:FindFirstChild("GroupCollapseArrow")
+		do
+			group = group.Parent
+		end
+		if group and group ~= contentBody then
+			local stroke = group:FindFirstChildOfClass("UIStroke")
+			if stroke then
+				local groupRevision = (group:GetAttribute("MidnightSearchGroupRevision") or 0) + 1
+				group:SetAttribute("MidnightSearchGroupRevision", groupRevision)
+				local baseColor = stroke.Color
+				local baseTransparency = stroke.Transparency
+				local groupKey = "search_group_highlight_" .. tostring(group)
+				F.tween(groupKey, stroke, 0.14, {
+					Color = COLORS.Accent,
+					Transparency = 0,
+				}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+				task.delay(0.65, function()
+					if group.Parent and group:GetAttribute("MidnightSearchGroupRevision") == groupRevision then
+						F.tween(groupKey, stroke, 0.35, {
+							Color = baseColor,
+							Transparency = baseTransparency,
+						}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+					end
+				end)
+			end
+		end
+	end
+
+	local function addHeaderTabHover(button, tabName)
+		button.MouseEnter:Connect(function()
+			if currentGroupTab ~= tabName then
+				F.setHeaderTabColor(button, COLORS.TabHover)
+			end
+		end)
+		button.MouseLeave:Connect(function()
+			if currentGroupTab ~= tabName then
+				F.setHeaderTabColor(button, COLORS.TabIdle)
+			end
+		end)
+	end
+
+	addHeaderTabHover(featuresHeaderTab, "features")
+	addHeaderTabHover(containerHeaderTab, "containertab!")
+
 	setGroupTab("features")
-end)
 
-containerHeaderTab.Activated:Connect(function()
-	setGroupTab("containertab!")
-end)
+	-- ============================================================================
+	-- "extra feature" groupbox (right column) with a delayed hover tooltip.
+	-- ============================================================================
 
-local function addHeaderTabHover(button, tabName)
-	button.MouseEnter:Connect(function()
-		if currentGroupTab ~= tabName then
-			button.TextColor3 = COLORS.TabHover
-		end
+	-- Toggle (30) + spacing + button (28) + spacing + dividecut row (28).
+	local extraFeatureContentHeight = 30 + 28 + 28 + CONFIG.spacing * 2
+
+	local extraFeatureGroup = F.create("Frame", otherFeaturesPage, {
+		Name = "ExtraFeatureGroupBox",
+		Position = UDim2.new(0.5, CONFIG.spacing * 0.5, 0, CONFIG.spacing),
+		Size = UDim2.new(
+			0.5,
+			-(CONFIG.spacing * 1.5),
+			0,
+			(CONFIG.spacing * 3 + 19) + extraFeatureContentHeight + CONFIG.spacing
+		),
+		BackgroundColor3 = Color3.fromRGB(16, 16, 19),
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		ZIndex = 3,
+	})
+	F.addCorner(extraFeatureGroup, 7)
+	F.addStroke(extraFeatureGroup)
+
+	local extraFeatureShadow = Instance.new("UIShadow")
+	extraFeatureShadow.Name = "GroupBoxShadow"
+	extraFeatureShadow.Color = Color3.fromRGB(0, 0, 0)
+	extraFeatureShadow.Transparency = 0.56
+	extraFeatureShadow.BlurRadius = UDim.new(0, 14)
+	extraFeatureShadow.Offset = UDim2.fromOffset(0, 4)
+	extraFeatureShadow.Spread = UDim2.fromOffset(0, 1)
+	extraFeatureShadow.ShowBehindParent = true
+	extraFeatureShadow.Parent = extraFeatureGroup
+
+	local extraFeatureTitle = F.makeText(
+		extraFeatureGroup,
+		"extra feature",
+		UDim2.new(1, -(CONFIG.spacing * 2), 0, 18),
+		UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing),
+		12,
+		COLORS.Muted,
+		Enum.Font.GothamBold
+	)
+	extraFeatureTitle.ZIndex = 4
+
+	F.registerCollapsibleGroup(
+		extraFeatureGroup,
+		(CONFIG.spacing * 3 + 19) + extraFeatureContentHeight + CONFIG.spacing,
+		extraFeatureTitle
+	)
+
+	F.create("Frame", extraFeatureGroup, {
+		Name = "HeaderDivider",
+		Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + 18 + CONFIG.spacing),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1),
+		BackgroundColor3 = COLORS.Divider,
+		BorderSizePixel = 0,
+		ZIndex = 4,
+	})
+
+	local extraFeatureContent = F.create("Frame", extraFeatureGroup, {
+		Name = "ExtraFeatureContent",
+		Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + 18 + CONFIG.spacing + 1 + CONFIG.spacing),
+		Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, extraFeatureContentHeight),
+		BackgroundTransparency = 1,
+		ZIndex = 4,
+	})
+
+	local tooltipToggle = createFeatureToggle(extraFeatureContent, "TooltipToggle", 0, "i have a tooltip!", function()
+		F.showNotification("This is a notification, hello!")
 	end)
-	button.MouseLeave:Connect(function()
-		if currentGroupTab ~= tabName then
-			button.TextColor3 = COLORS.TabIdle
-		end
-	end)
-end
 
-addHeaderTabHover(featuresHeaderTab, "features")
-addHeaderTabHover(containerHeaderTab, "containertab!")
+	-- Plain button styled like a dropdown button. The label lives inside the
+	-- button itself, and the button intentionally has no click behavior.
+	local extraButton = createFeatureButton(
+		extraFeatureContent,
+		"FeatureButton",
+		30 + CONFIG.spacing,
+		"this is a button!"
+	)
 
-setGroupTab("features")
+	-- "dividecut" row: buttons "1" and "2" side by side with even widths and
+	-- CONFIG.spacing between them.
+	local extraDivideCut = createFeatureButtonRow(
+		extraFeatureContent,
+		"ExtraDivideCut",
+		30 + CONFIG.spacing + 28 + CONFIG.spacing
+	)
+	extraDivideCut.addButton("1")
+	extraDivideCut.addButton("2")
 
--- ============================================================================
--- "extra feature" groupbox (right column) with a delayed hover tooltip.
--- ============================================================================
+	-- ============================================================================
+	-- "Notifications" group box (right column, under "extra feature").
+	-- Dropdown selects the notification position; the preview button shows the
+	-- notification with that position's animation.
+	-- ============================================================================
+	do
+		local notificationsContentHeight = 18 + 2 + 28 + CONFIG.spacing + 28
+		local notificationsExpandedHeight = (CONFIG.spacing * 3 + 19) + notificationsContentHeight + CONFIG.spacing
 
-local extraFeatureGroup = F.create("Frame", otherFeaturesPage, {
-	Name = "ExtraFeatureGroupBox",
-	Position = UDim2.new(0.5, CONFIG.spacing * 0.5, 0, 16),
-	Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, 69),
-	BackgroundColor3 = Color3.fromRGB(16, 16, 19),
-	BorderSizePixel = 0,
-	ClipsDescendants = true,
-	ZIndex = 3,
-})
-F.addCorner(extraFeatureGroup, 7)
-F.addStroke(extraFeatureGroup)
+		local notificationsGroup = F.create("Frame", otherFeaturesPage, {
+			Name = "NotificationsGroupBox",
+			Position = UDim2.new(
+				0.5,
+				CONFIG.spacing * 0.5,
+				0,
+				CONFIG.spacing + extraFeatureGroup.Size.Y.Offset + CONFIG.spacing
+			),
+			Size = UDim2.new(0.5, -(CONFIG.spacing * 1.5), 0, notificationsExpandedHeight),
+			BackgroundColor3 = Color3.fromRGB(16, 16, 19),
+			BorderSizePixel = 0,
+			ClipsDescendants = true,
+			ZIndex = 3,
+		})
+		F.addCorner(notificationsGroup, 7)
+		F.addStroke(notificationsGroup)
 
-local extraFeatureShadow = Instance.new("UIShadow")
-extraFeatureShadow.Name = "GroupBoxShadow"
-extraFeatureShadow.Color = Color3.fromRGB(0, 0, 0)
-extraFeatureShadow.Transparency = 0.56
-extraFeatureShadow.BlurRadius = UDim.new(0, 14)
-extraFeatureShadow.Offset = UDim2.fromOffset(0, 4)
-extraFeatureShadow.Spread = UDim2.fromOffset(0, 1)
-extraFeatureShadow.ShowBehindParent = true
-extraFeatureShadow.Parent = extraFeatureGroup
+		local notificationsShadow = Instance.new("UIShadow")
+		notificationsShadow.Name = "GroupBoxShadow"
+		notificationsShadow.Color = Color3.fromRGB(0, 0, 0)
+		notificationsShadow.Transparency = 0.56
+		notificationsShadow.BlurRadius = UDim.new(0, 14)
+		notificationsShadow.Offset = UDim2.fromOffset(0, 4)
+		notificationsShadow.Spread = UDim2.fromOffset(0, 1)
+		notificationsShadow.ShowBehindParent = true
+		notificationsShadow.Parent = notificationsGroup
 
-local extraFeatureTitle = F.makeText(
-	extraFeatureGroup,
-	"extra feature",
-	UDim2.new(1, -(CONFIG.spacing * 2), 0, 18),
-	UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing),
-	12,
-	COLORS.Muted,
-	Enum.Font.GothamBold
-)
-extraFeatureTitle.ZIndex = 4
+		local notificationsTitle = F.makeText(
+			notificationsGroup,
+			"Notifications",
+			UDim2.new(1, -(CONFIG.spacing * 2), 0, 18),
+			UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing),
+			12,
+			COLORS.Muted,
+			Enum.Font.GothamBold
+		)
+		notificationsTitle.ZIndex = 4
 
-F.create("Frame", extraFeatureGroup, {
-	Name = "HeaderDivider",
-	Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + 18 + CONFIG.spacing),
-	Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1),
-	BackgroundColor3 = COLORS.Divider,
-	BorderSizePixel = 0,
-	ZIndex = 4,
-})
+		F.registerCollapsibleGroup(notificationsGroup, notificationsExpandedHeight, notificationsTitle)
 
-local extraFeatureContent = F.create("Frame", extraFeatureGroup, {
-	Name = "ExtraFeatureContent",
-	Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + 18 + CONFIG.spacing + 1 + CONFIG.spacing),
-	Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 30),
-	BackgroundTransparency = 1,
-	ZIndex = 4,
-})
+		F.create("Frame", notificationsGroup, {
+			Name = "HeaderDivider",
+			Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + 18 + CONFIG.spacing),
+			Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, 1),
+			BackgroundColor3 = COLORS.Divider,
+			BorderSizePixel = 0,
+			ZIndex = 4,
+		})
 
-local tooltipToggle = createFeatureToggle(extraFeatureContent, "TooltipToggle", 0, "i have a tooltip!")
+		local notificationsContent = F.create("Frame", notificationsGroup, {
+			Name = "NotificationsContent",
+			Position = UDim2.fromOffset(CONFIG.spacing, CONFIG.spacing + 18 + CONFIG.spacing + 1 + CONFIG.spacing),
+			Size = UDim2.new(1, -(CONFIG.spacing * 2), 0, notificationsContentHeight),
+			BackgroundTransparency = 1,
+			ZIndex = 4,
+		})
 
-local tooltipPanel = F.create("CanvasGroup", ScreenGui, {
-	Name = "FeatureTooltip",
-	AnchorPoint = Vector2.new(0, 0),
-	Position = UDim2.fromOffset(0, 0),
-	Size = UDim2.fromOffset(220, 0),
-	AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundColor3 = Color3.fromRGB(21, 21, 25),
-	BackgroundTransparency = 0,
-	GroupTransparency = 1,
-	BorderSizePixel = 0,
-	Visible = false,
-	ClipsDescendants = false,
-	ZIndex = 7000,
-})
-F.addCorner(tooltipPanel, 6)
-F.addStroke(tooltipPanel)
+		local notificationPositionTitle = F.makeText(
+			notificationsContent,
+			"Notification positions",
+			UDim2.new(1, 0, 0, 18),
+			UDim2.fromOffset(0, 0),
+			13,
+			COLORS.TabIdle,
+			Enum.Font.GothamMedium
+		)
+		notificationPositionTitle.ZIndex = 6
 
-F.create("UIPadding", tooltipPanel, {
-	PaddingTop = UDim.new(0, 8),
-	PaddingBottom = UDim.new(0, 8),
-	PaddingLeft = UDim.new(0, 9),
-	PaddingRight = UDim.new(0, 9),
-})
+		createFeatureDropdown(
+			notificationsContent,
+			"NotificationPositionDropdown",
+			20,
+			{"Top center", "Bottom center", "Top left", "Top right", "Bottom right", "Bottom left"},
+			"Top center",
+			function(optionName)
+				F.setNotificationPosition(optionName or "Top center")
+			end
+		)
 
-F.create("UIListLayout", tooltipPanel, {
-	FillDirection = Enum.FillDirection.Vertical,
-	SortOrder = Enum.SortOrder.LayoutOrder,
-	HorizontalAlignment = Enum.HorizontalAlignment.Left,
-	Padding = UDim.new(0, 5),
-})
+		local notificationPreviewButton = createFeatureButton(
+			notificationsContent,
+			"PreviewNotificationButton",
+			20 + 28 + CONFIG.spacing,
+			"Preview notification"
+		)
+		notificationPreviewButton.button.Activated:Connect(function()
+			F.showNotification("This is a preview!")
+		end)
 
-local tooltipTitle = F.makeText(
-	tooltipPanel,
-	"i have a tooltip!",
-	UDim2.new(1, 0, 0, 0),
-	UDim2.fromOffset(0, 0),
-	13,
-	Color3.fromRGB(255, 255, 255),
-	Enum.Font.GothamBold
-)
-tooltipTitle.Name = "TooltipTitle"
-tooltipTitle.TextWrapped = true
-tooltipTitle.TextTruncate = Enum.TextTruncate.None
-tooltipTitle.TextYAlignment = Enum.TextYAlignment.Top
-tooltipTitle.AutomaticSize = Enum.AutomaticSize.Y
-tooltipTitle.LayoutOrder = 1
-tooltipTitle.ZIndex = 7001
-
-local tooltipDescription = F.makeText(
-	tooltipPanel,
-	"this is a tooltip! you can write what ever text you want here!",
-	UDim2.new(1, 0, 0, 0),
-	UDim2.fromOffset(0, 0),
-	12,
-	COLORS.TabIdle,
-	Enum.Font.GothamMedium
-)
-tooltipDescription.Name = "TooltipDescription"
-tooltipDescription.TextWrapped = true
-tooltipDescription.TextTruncate = Enum.TextTruncate.None
-tooltipDescription.TextYAlignment = Enum.TextYAlignment.Top
-tooltipDescription.AutomaticSize = Enum.AutomaticSize.Y
-tooltipDescription.LayoutOrder = 2
-tooltipDescription.ZIndex = 7001
-
-local tooltipSettings = CONFIG.TOOLTIP_SETTINGS
-local tooltipDelay = tooltipSettings.DELAY_BY_TOGGLE[tooltipToggle.row.Name]
-	or tooltipSettings.DEFAULT_DELAY
-local TOOLTIP_GAP = tooltipSettings.GAP
-local TOOLTIP_WIDTH = tooltipSettings.WIDTH
-
-local tooltipRevision = 0
-local tooltipVisible = false
-local tooltipHovering = false
-local tooltipHoverToken = 0
-
-local function getTooltipPointerPosition()
-	local point = getPointerPosition()
-	local origin = ScreenGui.AbsolutePosition
-	-- TooltipPanel.Position is relative to ScreenGui, unlike AbsolutePosition.
-	return Vector2.new(point.X - origin.X, point.Y - origin.Y)
-end
-
-local function positionFeatureTooltip()
-	local point = getTooltipPointerPosition()
-	local panelSize = tooltipPanel.AbsoluteSize
-	local screenSize = ScreenGui.AbsoluteSize
-	if screenSize.X <= 0 or screenSize.Y <= 0 then
-		return
+		-- Keep this box directly under "extra feature" when that box collapses.
+		F.addGroupBoxFollower(extraFeatureGroup, notificationsGroup, function(height)
+			return UDim2.new(0.5, CONFIG.spacing * 0.5, 0, CONFIG.spacing + height + CONFIG.spacing)
+		end)
 	end
-	-- Prefer the bottom-right of the cursor. Keep that vertical direction;
-	-- clamp to the viewport at the bottom edge instead of flipping above it.
-	local x = point.X + TOOLTIP_GAP
-	if x + panelSize.X > screenSize.X - 8 then
-		x = math.max(8, point.X - panelSize.X - TOOLTIP_GAP)
-	end
-	local y = point.Y + TOOLTIP_GAP
-	-- Keep the tooltip below the cursor even at the bottom screen edge.
-	-- The viewport may clip the overflow rather than moving it above the cursor.
-	tooltipPanel.Position = UDim2.fromOffset(x, y)
-end
 
-function F.hideFeatureTooltip()
-	tooltipHovering = false
-	tooltipHoverToken += 1
-	if not tooltipVisible then
-		return
-	end
-	tooltipVisible = false
-	tooltipRevision += 1
-	local revision = tooltipRevision
-	local fadeTween = F.tween("feature_tooltip_fade", tooltipPanel, 0.14, {
+	-- The tooltip section below keeps its exact behavior; it is only wrapped
+	-- in its own function scope so its locals get a separate register budget.
+	-- Declaring them directly in this build function pushed it past the
+	-- compiler's 200-register limit ("Out of local registers ... showFeatureTooltip").
+	local function setupFeatureTooltips()
+	local tooltipPanel = F.create("CanvasGroup", ScreenGui, {
+		Name = "FeatureTooltip",
+		AnchorPoint = Vector2.new(0, 0),
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromOffset(220, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Color3.fromRGB(21, 21, 25),
+		BackgroundTransparency = 0,
 		GroupTransparency = 1,
-	}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-	fadeTween.Completed:Connect(function()
-		if tooltipRevision == revision and not tooltipVisible then
-			tooltipPanel.Visible = false
-		end
-	end)
-end
+		BorderSizePixel = 0,
+		Visible = false,
+		ClipsDescendants = false,
+		ZIndex = 7000,
+	})
+	F.addCorner(tooltipPanel, 6)
+	F.addStroke(tooltipPanel)
 
-local function showFeatureTooltip()
-	if tooltipVisible or not tooltipHovering then
-		return
+	F.create("UIPadding", tooltipPanel, {
+		PaddingTop = UDim.new(0, CONFIG.spacing),
+		PaddingBottom = UDim.new(0, CONFIG.spacing),
+		PaddingLeft = UDim.new(0, CONFIG.spacing),
+		PaddingRight = UDim.new(0, CONFIG.spacing),
+	})
+
+	F.create("UIListLayout", tooltipPanel, {
+		FillDirection = Enum.FillDirection.Vertical,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Left,
+		Padding = UDim.new(0, CONFIG.spacing),
+	})
+
+	local tooltipTitle = F.makeText(
+		tooltipPanel,
+		"i have a tooltip!",
+		UDim2.new(1, 0, 0, 0),
+		UDim2.fromOffset(0, 0),
+		13,
+		Color3.fromRGB(255, 255, 255),
+		Enum.Font.GothamBold
+	)
+	tooltipTitle.Name = "TooltipTitle"
+	tooltipTitle.TextWrapped = true
+	tooltipTitle.TextTruncate = Enum.TextTruncate.None
+	tooltipTitle.TextYAlignment = Enum.TextYAlignment.Top
+	tooltipTitle.AutomaticSize = Enum.AutomaticSize.Y
+	tooltipTitle.LayoutOrder = 1
+	tooltipTitle.ZIndex = 7001
+
+	local tooltipDescription = F.makeText(
+		tooltipPanel,
+		"this is a tooltip! you can write what ever text you want here!",
+		UDim2.new(1, 0, 0, 0),
+		UDim2.fromOffset(0, 0),
+		12,
+		COLORS.TabIdle,
+		Enum.Font.GothamMedium
+	)
+	tooltipDescription.Name = "TooltipDescription"
+	tooltipDescription.TextWrapped = true
+	tooltipDescription.TextTruncate = Enum.TextTruncate.None
+	tooltipDescription.TextYAlignment = Enum.TextYAlignment.Top
+	tooltipDescription.AutomaticSize = Enum.AutomaticSize.Y
+	tooltipDescription.LayoutOrder = 2
+	tooltipDescription.ZIndex = 7001
+
+	local tooltipSettings = CONFIG.TOOLTIP_SETTINGS
+	local TOOLTIP_GAP = tooltipSettings.GAP
+	local TOOLTIP_WIDTH = tooltipSettings.WIDTH
+	local tooltipMaxWidth = TOOLTIP_WIDTH
+
+	local tooltipRevision = 0
+	local tooltipVisible = false
+	local tooltipHovering = false
+	local tooltipHoverToken = 0
+
+	-- Measure wrapped text so the panel can hug the longest line instead of
+	-- leaving a wide empty area beside the description.
+	local function measureTooltipText(text, fontSize, font, availableWidth)
+		local bounds = SERVICES.TextService:GetTextSize(
+			text,
+			fontSize,
+			font,
+			Vector2.new(math.max(20, availableWidth), 10000)
+		)
+		return bounds.X
 	end
-	tooltipVisible = true
-	tooltipRevision += 1
-	local screenSize = Root.AbsoluteSize
-	local width = math.clamp(TOOLTIP_WIDTH, 140, math.max(140, screenSize.X - 24))
-	tooltipPanel.Size = UDim2.fromOffset(width, 0)
-	tooltipPanel.Visible = true
-	tooltipPanel.GroupTransparency = 1
-	positionFeatureTooltip()
-	F.tween("feature_tooltip_fade", tooltipPanel, 0.16, {
-		GroupTransparency = 0,
-	}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-end
 
-tooltipToggle.row.MouseEnter:Connect(function()
-	tooltipHovering = true
-	tooltipHoverToken += 1
-	local token = tooltipHoverToken
-	task.delay(tooltipDelay, function()
-		if tooltipHovering and tooltipHoverToken == token and not tooltipVisible then
-			showFeatureTooltip()
+	local function fitTooltipToContent()
+		local maxWidth = tooltipMaxWidth
+		local availableWidth = math.max(20, maxWidth - CONFIG.spacing * 2)
+		local titleWidth = measureTooltipText(tooltipTitle.Text, 13, Enum.Font.GothamBold, availableWidth)
+		local descriptionWidth = measureTooltipText(tooltipDescription.Text, 12, Enum.Font.GothamMedium, availableWidth)
+		local contentWidth = math.ceil(math.max(titleWidth, descriptionWidth)) + 2
+		local width = math.clamp(contentWidth + CONFIG.spacing * 2, 60, maxWidth)
+		tooltipPanel.Size = UDim2.fromOffset(width, 0)
+	end
+
+	local function getTooltipPointerPosition()
+		local point = getPointerPosition()
+		local origin = ScreenGui.AbsolutePosition
+		-- TooltipPanel.Position is relative to ScreenGui, unlike AbsolutePosition.
+		return Vector2.new(point.X - origin.X, point.Y - origin.Y)
+	end
+
+	local function positionFeatureTooltip()
+		local point = getTooltipPointerPosition()
+		local panelSize = tooltipPanel.AbsoluteSize
+		local screenSize = ScreenGui.AbsoluteSize
+		if screenSize.X <= 0 or screenSize.Y <= 0 then
+			return
 		end
-	end)
-end)
+		-- Prefer the bottom-right of the cursor. Keep that vertical direction;
+		-- clamp to the viewport at the bottom edge instead of flipping above it.
+		local x = point.X + TOOLTIP_GAP
+		if x + panelSize.X > screenSize.X - 8 then
+			x = math.max(8, point.X - panelSize.X - TOOLTIP_GAP)
+		end
+		local y = point.Y + TOOLTIP_GAP
+		-- Keep the tooltip below the cursor even at the bottom screen edge.
+		-- The viewport may clip the overflow rather than moving it above the cursor.
+		tooltipPanel.Position = UDim2.fromOffset(x, y)
+	end
 
-tooltipToggle.row.MouseLeave:Connect(function()
-	tooltipHovering = false
-	tooltipHoverToken += 1
-	F.hideFeatureTooltip()
-end)
+	function F.hideFeatureTooltip()
+		tooltipHovering = false
+		tooltipHoverToken += 1
+		if not tooltipVisible then
+			return
+		end
+		tooltipVisible = false
+		tooltipRevision += 1
+		local revision = tooltipRevision
+		local fadeTween = F.tween("feature_tooltip_fade", tooltipPanel, 0.14, {
+			GroupTransparency = 1,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		fadeTween.Completed:Connect(function()
+			if tooltipRevision == revision and not tooltipVisible then
+				tooltipPanel.Visible = false
+			end
+		end)
+	end
 
-SERVICES.RunService.RenderStepped:Connect(function()
-	if tooltipVisible then
+	local function showFeatureTooltip()
+		if tooltipVisible or not tooltipHovering then
+			return
+		end
+		tooltipVisible = true
+		tooltipRevision += 1
+		local screenSize = Root.AbsoluteSize
+		tooltipMaxWidth = math.clamp(TOOLTIP_WIDTH, 140, math.max(140, screenSize.X - 24))
+		fitTooltipToContent()
+		tooltipPanel.Visible = true
+		tooltipPanel.GroupTransparency = 1
 		positionFeatureTooltip()
+		F.tween("feature_tooltip_fade", tooltipPanel, 0.16, {
+			GroupTransparency = 0,
+		}, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	end
-end)
+
+	local function attachFeatureTooltip(target, tooltipName, titleText, descriptionText)
+		target.MouseEnter:Connect(function()
+			-- Title may be a function so it always mirrors the target's own text.
+			tooltipTitle.Text = type(titleText) == "function" and titleText() or titleText
+			tooltipDescription.Text = descriptionText
+			fitTooltipToContent()
+			tooltipHovering = true
+			tooltipHoverToken += 1
+			local token = tooltipHoverToken
+			local delay = tooltipSettings.DELAY_BY_TOGGLE[tooltipName] or tooltipSettings.DEFAULT_DELAY
+			task.delay(delay, function()
+				if tooltipHovering and tooltipHoverToken == token and not tooltipVisible then
+					showFeatureTooltip()
+				end
+			end)
+		end)
+
+		target.MouseLeave:Connect(function()
+			tooltipHovering = false
+			tooltipHoverToken += 1
+			F.hideFeatureTooltip()
+		end)
+	end
+
+	attachFeatureTooltip(
+		tooltipToggle.row,
+		"TooltipToggle",
+		"i have a tooltip!",
+		"this is a tooltip! you can write what ever text you want here!"
+	)
+
+	attachFeatureTooltip(
+		extraButton.button,
+		"FeatureButton",
+		function()
+			return extraButton.label.Text
+		end,
+		"this is a button! it does absolutely nothing."
+	)
+
+	SERVICES.RunService.RenderStepped:Connect(function()
+		if tooltipVisible then
+			positionFeatureTooltip()
+		end
+	end)
+	end
+
+	setupFeatureTooltips()
+end
 
 function F.setActivePage(name)
 	local showNewFeatures = name == "new features"
